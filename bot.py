@@ -1,156 +1,165 @@
 # bot.py
 import os
-import sys
 import requests
-import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from flask import Flask
 from threading import Thread
 import logging
-import urllib.parse
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-print(f"🐍 Python: {sys.version}")
-
-# Токен из переменной окружения
+# Получаем токен из переменной окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TOKEN:
-    logger.error("❗ TELEGRAM_TOKEN не задан")
-    sys.exit(1)
 
-# === Flask для keep-alive ===
+if not TOKEN:
+    logger.error("❗ TELEGRAM_TOKEN не задан. Установите в переменных окружения Render.")
+else:
+    logger.info("✅ TELEGRAM_TOKEN загружен")
+
+# === Flask-сервер для поддержания активности (чтобы Render не "убил" процесс) ===
 app_flask = Flask('')
 
 @app_flask.route('/')
 def home():
-    return "🟢 Бот работает"
+    return "✅ Бот работает 24/7"
 
-def run_flask():
-    port = int(os.getenv('PORT', 10000))
-    app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+def run():
+    port = int(os.getenv('PORT', 8080))
+    app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_flask, daemon=True)
+    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
+    t = Thread(target=run)
+    t.daemon = True
     t.start()
 
-# === Поиск товаров на OZON через прокси ===
-def search_ozon(query: str) -> list:
-    if not query.strip():
-        return []  # ✅ Правильный отступ и возврат пустого списка
-
-    logger.info(f"🔍 Поиск на OZON: '{query}'")
-    encoded_query = urllib.parse.quote(query.strip())
-    proxy_url = f"https://ozon-api-proxy.vercel.app/api/search?q={encoded_query}"
+# === Поиск товаров через API Wildberries (проверено, работает) ===
+def search_wb(query: str) -> list:
+    url = "https://search.wb.ru/exactmatch/ru/common/v4/search"
+    params = {
+        "query": query,
+        "resultset": "catalog",
+        "dest": "-1257786",     # Обязательно!
+        "appType": "1",         # Обязательно!
+        "lang": "ru",
+        "locale": "ru",
+        "sort": "popular",
+        "spp": "0",
+        "suppressSpellcheck": "false"
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 YaBrowser/25.7.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.wildberries.ru/",
+        "X-Requested-With": "XMLHttpRequest"
+    }
 
     try:
-        response = requests.get(
-            proxy_url,
-            timeout=15,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-                "Referer": "https://ozon-api-proxy.vercel.app"
-            }
-        )
+        logger.info(f"🔍 Отправляю запрос: {url}?query={query}")
+        response = requests.get(url, params=params, headers=headers, timeout=15)
 
-        logger.info(f"📊 Статус прокси: {response.status_code}")
+        logger.info(f"📡 Статус ответа: {response.status_code}")
 
         if response.status_code != 200:
-            logger.error(f"❌ Ошибка прокси: {response.status_code}")
-            return None
-
-        data = response.json()
-
-        if not data.get("products") or not isinstance(data["products"], list):
-            logger.warning("📦 Нет товаров в ответе или формат неверен")
+            logger.error(f"❌ Ошибка API: {response.status_code}, текст: {response.text[:500]}")
             return []
 
-        products = data["products"]
-        result = []
-        seen_ids = set()
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.error(f"❌ Не удалось распарсить JSON: {e}")
+            return []
 
-        for p in products[:50]:
+        # Извлекаем товары
+        products = data.get("data", {}).get("products", [])
+        if not products:
+            logger.warning("📦 Нет товаров в ответе (пустой список)")
+            return []
+
+        logger.info(f"✅ Найдено {len(products)} товаров")
+
+        results = []
+        for p in products[:20]:
             try:
-                pid = p.get("id")
-                if not pid or pid in seen_ids:
+                price_u = p.get("salePriceU") or p.get("priceU")
+                if not price_u:
+                    logger.debug("⚠️ Пропущен товар без цены")
                     continue
-                seen_ids.add(pid)
+                price = price_u // 100  # в рублях
+                reviews = p.get("reviewCount", 0) or p.get("feedbacks", 0)
+                name = p.get("name") or p.get("productName", "Без названия")
+                product_id = p.get("id") or p.get("nmId")
+                if not product_id:
+                    logger.debug("⚠️ Нет ID товара")
+                    continue
+                link = f"https://www.wildberries.ru/catalog/{product_id}/detail.aspx"
 
-                price = p.get("price")
-                if not price or price <= 0:
+                # Лёгкая фильтрация
+                if len(name) > 100:
+                    name = name[:97] + "..."
+                if "доставка" in name.lower():
                     continue
 
-                reviews = p.get("reviews", 0)
-                name = p.get("name", "").strip()
-                brand = p.get("brand", "").strip()
-                if not name:
-                    continue
-
-                full_name = f"{brand} {name}".strip()
-                if len(full_name) > 80:
-                    full_name = full_name[:77] + "..."
-
-                link = f"https://www.ozon.ru/product/{pid}/"
-
-                result.append({
-                    "name": full_name,
+                results.append({
+                    "name": name,
                     "price": price,
                     "reviews": reviews,
                     "link": link
                 })
-            except (TypeError, ValueError, AttributeError):
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обработке товара: {e}")
                 continue
 
-        if not result:
-            return []
+        # Сортировка: по отзывам (↓), затем цена (↑)
+        results.sort(key=lambda x: (-x["reviews"], x["price"]))
+        return results[:5]
 
-        # Сортировка: по отзывам (↓), цена (↑)
-        result.sort(key=lambda x: (-x["reviews"], x["price"]))
-        return result[:5]  # ТОП-5
-
+    except requests.exceptions.RequestException as e:
+        logger.error(f"🌐 Ошибка сети: {e}")
+        return []
     except Exception as e:
-        logger.error(f"💥 Ошибка при запросе к OZON прокси: {e}")
-        return None
+        logger.error(f"❌ Неизвестная ошибка: {e}")
+        return []
 
-# === Обработчики ===
+# === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")
-    reply_markup = InlineKeyboardMarkup([keyboard])
-
+    keyboard = [[InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🎉 *Привет Добро пожаловать в бот по поиску лучших цен на OZON!* 🛍️\n\n"
+        "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
         "🔥 Здесь ты найдёшь:\n"
-        "✅ *Топовые товары* с высокими оценками ⭐\n"
-        "💰 *Лучшие цены* и скидки 💸\n"
-        "📦 *Много отзывов* — проверено тысячами покупателей 📣\n\n"
-        "📌 Подпишись на канал: *Лучшее с OZON | DenShop1*(https://t.me/+uGrNl01GXGI4NjI6)\n"
-        "Там — только горячие скидки и лайфхаки 🔥\n\n"
-        "🚀 Нажми кнопку и начни экономить!",
+        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
+        "💰 *Максимальные скидки* и лучшие цены 💸\n\n"
+        "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
         parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=reply_markup
     )
 
+# === Обработчик кнопки ===
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "start_searching":
         await query.edit_message_text(
-            "Отлично 🔥\n"
-            "Теперь напиши, что ты хочешь найти на OZON.\n\n"
+            "Отлично! 🔥\n"
+            "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
             "Например:\n"
             "• Наушники Sony\n"
             "• Кроссовки\n"
             "• Power Bank"
         )
 
+# === Обработка текстового запроса ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     if len(query) < 2:
@@ -159,67 +168,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Показываем, что ищем
     await update.message.reply_text(
-        f"🔥 *Лучшее с OZON | DenShop1*(https://t.me/+uGrNl01GXGI4NjI6)\n"
-        f"🔍 Ищу *ТОПовые товары* по запросу: *{query}*",
+        f"🔥 [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        f"🔍 Ищу: *{query}*",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
 
-    # Ищем
-    results = search_ozon(query)
+    # Ищем товары
+    results = search_wb(query)
 
-    # === ФОЛБЭК: если прокси не ответил ===
-    if results is None:
-        encoded_query = urllib.parse.quote(query)
-        ozon_link = f"https://www.ozon.ru/search/?text={encoded_query}"
-
-        await update.message.reply_text(
-            f"⚠️ *Сервис временно недоступен*\n"
-            f"Но вы можете посмотреть вручную:\n\n"
-            f"🔍 *{query} на OZON*\n"
-            f"🔗 Перейти({ozon_link})\n\n"
-            f"🔄 Попробуйте позже",
-            parse_mode="Markdown",
-            disable_web_page_preview=True
-        )
-
-    elif results:
-        message = "🏆 *ТОП-5 самых популярных товаров на OZON:*\n\n"
+    if results:
+        message = "🏆 *Топ-5 самых выгодных предложений:*\n\n"
         for i, r in enumerate(results, 1):
             stars = "⭐" * min(5, max(1, r['reviews'] // 50))
             message += (
                 f"{i}. *{r['name']}*\n"
-                f" 💰 {r['price']:,} ₽ | {r['reviews']} отзывов {stars}\n"
-                f" 🔗 Перейти({r['link']})\n\n"
+                f"   💰 {r['price']:,.0f} ₽  |  {r['reviews']} отзывов  {stars}\n"
+                f"   🔗 [Перейти]({r['link']})\n\n"
             )
-        await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
-
     else:
-        await update.message.reply_text(
-            "❌ По вашему запросу ничего не найдено.\n\n"
-            "Попробуйте:\n"
-            "• Уточнить запрос (например, «кроссовки мужские»)\n"
-            "• Написать по-другому («наушники» → «наушники беспроводные»)\n"
-            "• Попробовать позже"
-        )
+        message = (
+            "❌ Ничего не найдено по запросу *«{query}»*.\n\n"
+            "Попробуй уточнить: например, *«кроссовки мужские»*, *«наушники Bluetooth»*."
+        ).format(query=query)
+
+    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
 
 # === Запуск бота ===
 if __name__ == "__main__":
-    keep_alive()
+    keep_alive()  # Запускаем Flask-сервер
 
-    logger.info("🤖 Инициализация бота для OZON...")
-    application = Application.builder().token(TOKEN).build()
+    if not TOKEN:
+        logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
+    else:
+        logger.info("🤖 Бот запускается...")
+        app = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("✅ Бот для OZON запущен. Ожидание сообщений...")
-
-    try:
-        asyncio.run(application.run_polling())
-    except KeyboardInterrupt:
-        logger.info("💤 Бот остановлен вручную.")
-    except Exception as e:
-        logger.critical(f"💥 Критическая ошибка: {e}")
-
+        logger.info("✅ Бот запущен и слушает сообщения...")
+        app.run_polling()
