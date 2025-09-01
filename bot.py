@@ -39,22 +39,19 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# === Поиск товаров через API Wildberries (проверено, работает) ===
+# === Поиск товаров через API Wildberries (с фильтрами) ===
 def search_wb(query: str) -> list:
     url = "https://search.wb.ru/exactmatch/ru/common/v4/search"
     params = {
         "query": query,
         "resultset": "catalog",
-        "dest": "-1257786",     # Обязательно!
-        "appType": "1",         # Обязательно!
-        "lang": "ru",
-        "locale": "ru",
+        "dest": "-1257786",
+        "appType": "1",
         "sort": "popular",
-        "spp": "0",
-        "suppressSpellcheck": "false"
+        "spp": "0"
     }
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 YaBrowser/25.7.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -69,7 +66,7 @@ def search_wb(query: str) -> list:
         logger.info(f"📡 Статус ответа: {response.status_code}")
 
         if response.status_code != 200:
-            logger.error(f"❌ Ошибка API: {response.status_code}, текст: {response.text[:500]}")
+            logger.error(f"❌ Ошибка API: {response.status_code}")
             return []
 
         try:
@@ -78,40 +75,43 @@ def search_wb(query: str) -> list:
             logger.error(f"❌ Не удалось распарсить JSON: {e}")
             return []
 
-        # Извлекаем товары
         products = data.get("data", {}).get("products", [])
         if not products:
-            logger.warning("📦 Нет товаров в ответе (пустой список)")
+            logger.warning("📦 Нет товаров в ответе")
             return []
 
         logger.info(f"✅ Найдено {len(products)} товаров")
 
         results = []
-        for p in products[:20]:
+        for p in products[:50]:  # Берём больше, чтобы отфильтровать
             try:
+                # Оценка (rating) = reviewCount / feedbacks (если нет — пропускаем)
+                feedbacks = p.get("reviewCount", 0) or p.get("feedbacks", 0)
                 price_u = p.get("salePriceU") or p.get("priceU")
-                if not price_u:
-                    logger.debug("⚠️ Пропущен товар без цены")
+                if not price_u or feedbacks < 5:  # минимум 5 отзывов
                     continue
-                price = price_u // 100  # в рублях
-                reviews = p.get("reviewCount", 0) or p.get("feedbacks", 0)
+
+                # Рассчитываем рейтинг (если есть)
+                rating = p.get("reviewRating", 0)
+                if rating < 4.7:
+                    continue
+
+                price = price_u // 100
                 name = p.get("name") or p.get("productName", "Без названия")
                 product_id = p.get("id") or p.get("nmId")
                 if not product_id:
-                    logger.debug("⚠️ Нет ID товара")
                     continue
+
                 link = f"https://www.wildberries.ru/catalog/{product_id}/detail.aspx"
 
-                # Лёгкая фильтрация
-                if len(name) > 100:
-                    name = name[:97] + "..."
-                if "доставка" in name.lower():
+                if len(name) > 100 or "доставка" in name.lower():
                     continue
 
                 results.append({
                     "name": name,
                     "price": price,
-                    "reviews": reviews,
+                    "reviews": feedbacks,
+                    "rating": rating,
                     "link": link
                 })
             except Exception as e:
@@ -122,11 +122,8 @@ def search_wb(query: str) -> list:
         results.sort(key=lambda x: (-x["reviews"], x["price"]))
         return results[:5]
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"🌐 Ошибка сети: {e}")
-        return []
     except Exception as e:
-        logger.error(f"❌ Неизвестная ошибка: {e}")
+        logger.error(f"❌ Ошибка запроса: {e}")
         return []
 
 # === Команда /start ===
@@ -136,7 +133,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
         "🔥 Здесь ты найдёшь:\n"
-        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
+        "✅ *Топовые товары* с рейтингом от 4.7 ⭐\n"
+        "💬 *Наибольшее количество отзывов* 📣\n"
         "💰 *Максимальные скидки* и лучшие цены 💸\n\n"
         "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
         "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
@@ -178,19 +176,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = search_wb(query)
 
     if results:
-        message = "🏆 *Топ-5 самых выгодных предложений:*\n\n"
+        message = "🏆 *Топ-5 самых выгодных предложений (рейтинг ≥ 4.7, много отзывов):*\n\n"
         for i, r in enumerate(results, 1):
-            stars = "⭐" * min(5, max(1, r['reviews'] // 50))
+            stars = "⭐" * 5  # Все товары ≥ 4.7
             message += (
                 f"{i}. *{r['name']}*\n"
                 f"   💰 {r['price']:,.0f} ₽  |  {r['reviews']} отзывов  {stars}\n"
                 f"   🔗 [Перейти]({r['link']})\n\n"
             )
     else:
+        # 🔗 Ссылка на Wildberries с фильтрами
+        wb_link = f"https://www.wildberries.ru/catalog/0/search.aspx?search={query}&sort=popular&rating=4.7"
         message = (
             "❌ Ничего не найдено по запросу *«{query}»*.\n\n"
-            "Попробуй уточнить: например, *«кроссовки мужские»*, *«наушники Bluetooth»*."
-        ).format(query=query)
+            "Попробуй поискать на официальном сайте с фильтрами:\n"
+            "• Сортировка: по популярности\n"
+            "• Рейтинг: от 4.7\n"
+            "• Много отзывов\n\n"
+            "🛒 [Перейти на Wildberries]({link})"
+        ).format(query=query, link=wb_link)
 
     await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
 
