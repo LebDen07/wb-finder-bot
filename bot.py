@@ -1,226 +1,240 @@
-# wb_finder_bot.py
+# bot.py
+import os
+import sys
+import requests
+import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
-import re
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from flask import Flask
+from threading import Thread
+import logging
+import urllib.parse
 
-# ⚙️ Настройки
-TELEGRAM_TOKEN = "8359908342:AAFT5jgAHvDo5wnuZqZEM1A4OkboU4TE4IU"  # 🔥 Замените на свой!
-SEARCH_BASE = "https://www.wildberries.ru/catalog/0/search.aspx?search="
+# Логирование
+logging.basicConfig(
+ format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+ level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# 🛠️ Настройка драйвера
-def create_driver():
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # фоновый режим
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    driver = webdriver.Chrome(options=options)
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => false});")
-    return driver
+print(f"🐍 Python: {sys.version}")
 
-# 🔍 Улучшенный парсинг цены и отзывов
-def parse_price_and_reviews(product):
-    price = None
-    reviews = 0
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+ logger.error("❗ TELEGRAM_TOKEN не задан")
+ sys.exit(1)
 
-    # 💰 Парсинг цены
-    try:
-        main_price_elem = product.find_element(By.XPATH, './/span[contains(@class, "price") and not(contains(@class, "old"))]')
-        price_text = main_price_elem.text.strip()
-        price_match = re.search(r'\d+', price_text.replace(' ', ''))
-        if price_match:
-            price = int(price_match.group())
-    except:
-        pass
+# === Flask для keep-alive ===
+app_flask = Flask('')
 
-    if not price:
-        try:
-            all_prices = product.find_elements(By.XPATH, './/span[contains(text(), "₽")]')
-            for el in all_prices:
-                txt = el.text.strip()
-                match = re.search(r'\d+', txt.replace(' ', ''))
-                if match:
-                    price = int(match.group())
-                    break
-        except:
-            pass
+@app_flask.route('/')
+def home():
+ return "🟢 Бот работает"
 
-    # ⭐ Парсинг отзывов — ищем по всей карточке
-    try:
-        # Вариант 1: REVMT или текст с отзывами
-        review_elements = product.find_elements(By.XPATH,
-            './/span[contains(text(), "отзыв") or contains(text(), "review") or contains(text(), "REVMT")] | '
-            './/div[contains(text(), "отзыв") or contains(text(), "review") or contains(text(), "REVMT")]'
-        )
-        for el in review_elements:
-            text = el.text.strip()
-            match = re.search(r'\d+', text)
-            if match:
-                reviews = int(match.group())
-                break
+def run_flask():
+ port = int(os.getenv('PORT', 10000))
+ app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-        # Вариант 2: по классу (count, reviews)
-        if reviews == 0:
-            count_elems = product.find_elements(By.XPATH,
-                './/*[contains(@class, "count") or contains(@class, "reviews") or contains(@class, "revmt")]'
-            )
-            for el in count_elems:
-                text = el.get_attribute("textContent").strip()
-                match = re.search(r'\d+', text)
-                if match:
-                    reviews = int(match.group())
-                    break
+def keep_alive():
+ t = Thread(target=run_flask, daemon=True)
+ t.start()
 
-        # Вариант 3: data-count
-        if reviews == 0:
-            try:
-                data_count = product.get_attribute("data-count")
-                if data_count and data_count.isdigit():
-                    reviews = int(data_count)
-            except:
-                pass
-
-        # Вариант 4: REVMT в тексте карточки
-        if reviews == 0:
-            full_text = product.text
-            match = re.search(r'REVMT\D*(\d+)', full_text, re.IGNORECASE)
-            if match:
-                reviews = int(match.group(1))
-
-    except Exception as e:
-        pass
-
-    return price, reviews
-
-# 🔎 Поиск на Wildberries
+# === Поиск товаров — с фолбэком ===
 def search_wb(query: str) -> list:
-    driver = create_driver()
-    results = []
-    url = SEARCH_BASE + query.replace(" ", "+")
-    
-    try:
-        driver.get(url)
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "article.product-card"))
-        )
-        products = driver.find_elements(By.CSS_SELECTOR, "article.product-card")
-        
-        for product in products[:20]:
-            try:
-                link_elem = product.find_element(By.CSS_SELECTOR, "a[href*='/catalog/']")
-                name = link_elem.get_attribute("aria-label")
-                if not name or len(name) > 100 or "доставка" in name.lower():
-                    continue
+ if not query.strip():
+ return 
 
-                # Передаём всю карточку
-                price, reviews = parse_price_and_reviews(product)
+ keyword = urllib.parse.quote(query.strip())
+ logger.info(f"🔍 Поиск: '{query}'")
 
-                if not price:
-                    continue
+ # 🔁 Список URL для попыток (резервные варианты)
+ urls = [
+ f"https://catalog.wb.ru/catalog/autosearch/data?query={keyword}&dest=-1257786&lang=ru&curr=rub",
+ f"https://catalog.wb.ru/catalog/electronics/catalog?keyword={keyword}&dest=-1257786&sort=popular",
+ f"https://search.wb.ru/exactmatch/ru/common/v4/search?query={keyword}&dest=-1257786&resultset=items"
+ ]
 
-                link = link_elem.get_attribute("href")
+ headers = {
+ "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+ "Accept": "application/json",
+ "Referer": "https://www.wildberries.ru/",
+ "Origin": "https://www.wildberries.ru",
+ "X-Requested-With": "XMLHttpRequest"
+ }
 
-                results.append({
-                    "name": name,
-                    "price": price,
-                    "reviews": reviews,
-                    "link": link
-                })
-            except Exception as e:
-                continue
+ for i, url in enumerate(urls, 1):
+ try:
+ logger.info(f"🔁 Попытка {i}: GET {url}")
+ response = requests.get(url, headers=headers, timeout=10)
 
-        # Сортировка: больше отзывов → дешевле
-        results.sort(key=lambda x: (-x["reviews"], x["price"]))
+ logger.info(f"📊 Статус: {response.status_code}")
 
-    except Exception as e:
-        print(f"❌ Ошибка поиска: {e}")
-    finally:
-        driver.quit()
+ if response.status_code == 200:
+ data = response.json()
+ logger.info(f"📦 JSON получен: {len(str(data))} символов")
 
-    return results[:5]
+ products = 
 
-# 🤖 Команда /start с анимацией, ссылкой и кнопкой
+ # Парсим разные форматы ответа
+ if "data" in data and "products" in data"data":
+ products = data"data""products"
+ elif "data" in data and "items" in data"data":
+ products = data"data""items"
+ elif "products" in data:
+ products = data"products"
+ else:
+ logger.warning(f"⚠️ Нет ключа 'products' в ответе")
+ continue
+
+ if products:
+ logger.info(f"✅ Найдено {len(products)} товаров")
+ result = 
+ seen_ids = set()
+
+ for p in products:50:
+ pid = p.get("id") or p.get("nmId")
+ if not pid or pid in seen_ids:
+ continue
+ seen_ids.add(pid)
+
+ price_u = p.get("priceU") or p.get("salePriceU") or p.get("salePriceU")
+ if not price_u:
+ continue
+
+ price = price_u // 100
+ reviews = p.get("feedbacks", 0) or p.get("feedbackCount", 0)
+ name = p.get("name", "Без названия")
+ brand = p.get("brand", "").strip()
+ full_name = f"{brand} {name}".strip():80
+ link = f"https://www.wildberries.ru/catalog/{pid}/detail.aspx"
+
+ result.append({
+ "name": full_name,
+ "price": price,
+ "reviews": reviews,
+ "link": link
+ })
+
+ result.sort(key=lambda x: (-x"reviews", x"price"))
+ return result:5
+
+ else:
+ logger.warning(f"⚠️ Пустой список товаров в ответе")
+ continue
+
+ else:
+ logger.warning(f"❌ Ошибка HTTP {response.status_code} на URL {url}")
+
+ except Exception as e:
+ logger.error(f"💥 Ошибка при запросе к {url}: {e}")
+ continue
+
+ # Если все API не ответили — возвращаем None (не пустой список!)
+ logger.error("❌ Все API не ответили")
+ return None  # Отличие: None = ошибка,  = пусто
+
+# === Обработчики ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Кнопка
-    keyboard = [[InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+ keyboard = InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")
+ reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Текст с гиперссылкой на канал
-    await update.message.reply_text(
-        "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
-        "🔥 Здесь ты найдёшь:\n"
-        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
-        "💰 *Максимальные скидки* и лучшие цены 💸\n"
-        "📦 *Проверенные отзывы* от тысяч покупателей 📣\n\n"
-        "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
-        "Там — только самые горячие скидки и лайфхаки по покупкам! 🔥\n\n"
-        "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-        reply_markup=reply_markup
-    )
+ await update.message.reply_text(
+ "🎉 *Привет Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
+ "🔥 Здесь ты найдёшь:\n"
+ "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
+ "💰 *Максимальные скидки* и лучшие цены 💸\n"
+ "📦 *Проверенные отзывы* от тысяч покупателей 📣\n\n"
+ "📌 Подпишись на канал: *Лучшее с Wildberries | DenShop1*(https://t.me/+uGrNl01GXGI4NjI6)\n"
+ "Там — только самые горячие скидки и лайфхаки по покупкам 🔥\n\n"
+ "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
+ parse_mode="Markdown",
+ disable_web_page_preview=True,
+ reply_markup=reply_markup
+ )
 
-# 🤖 Обработчик кнопки
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "start_searching":
-        await query.edit_message_text(
-            "Отлично! 🔥\n"
-            "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
-            "Например:\n"
-            "• Наушники Sony\n"
-            "• Кроссовки\n"
-            "• Power Bank"
-        )
+ query = update.callback_query
+ await query.answer()
+ if query.data == "start_searching":
+ await query.edit_message_text(
+ "Отлично 🔥\n"
+ "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
+ "Например:\n"
+ "• Наушники Sony\n"
+ "• Кроссовки\n"
+ "• Power Bank"
+ )
 
-# 🤖 Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text.strip()
-    if len(query) < 2:
-        await update.message.reply_text("❌ Запрос слишком короткий.")
-        return
+ query = update.message.text.strip()
+ if len(query) < 2:
+ await update.message.reply_text("❌ Запрос слишком короткий. Введите хотя бы 2 символа.")
+ return
 
-    # Сообщение с гиперссылкой на канал
-    await update.message.reply_text(
-        f"🔥 [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
-        f"Ищу: *{query}*",
-        parse_mode="Markdown",
-        disable_web_page_preview=True
-    )
+ # Показываем, что ищем
+ await update.message.reply_text(
+ f"🔥 *Лучшее с Wildberries | DenShop1*(https://t.me/+uGrNl01GXGI4NjI6)\n"
+ f"🔍 Ищу *ТОПовые товары* по запросу: *{query}*",
+ parse_mode="Markdown",
+ disable_web_page_preview=True
+ )
 
-    results = search_wb(query)
+ # Ищем
+ results = search_wb(query)
 
-    if results:
-        message = "🏆 *Топ-5 самых выгодных предложений:*\n\n"
-        for i, r in enumerate(results, 1):
-            stars = "⭐" * min(5, max(1, (r['reviews'] // 50)))
-            message += (
-                f"{i}. *{r['name']}*\n"
-                f"   💰 {r['price']:,.0f} ₽  |  {r['reviews']} отзывов  {stars}\n"
-                f"   🔗 [Перейти]({r['link']})\n\n"
-            )
-    else:
-        message = "❌ Ничего не найдено. Попробуй уточнить запрос."
+ # === ФОЛБЭК: если API не ответили (ошибка), но есть товары — показываем
+ if results is None:
+ # ❌ Все API упали — даём ручной поиск
+ encoded_query = urllib.parse.quote(query)
+ wb_link = f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}"
 
-    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
+ await update.message.reply_text(
+ f"⚠️ *Сервис временно недоступен*\n"
+ f"Но вы можете вручную посмотреть лучшие предложения:\n\n"
+ f"🔍 *{query} на Wildberries*\n"
+ f"🔗 Перейти({wb_link})\n\n"
+ f"🔄 Попробуйте позже — иногда сервера перегружены",
+ parse_mode="Markdown",
+ disable_web_page_preview=True
+ )
 
-# 🚀 Запуск
+ elif results:
+ message = "🏆 *ТОП-5 самых популярных товаров:*\n\n"
+ for i, r in enumerate(results, 1):
+ stars = "⭐" * min(5, max(1, r'reviews' // 50))
+ message += (
+ f"{i}. *{r'name'}*\n"
+ f" 💰 {r'price':,} ₽ | {r'reviews'} отзывов {stars}\n"
+ f" 🔗 Перейти({r'link'})\n\n"
+ )
+ await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
+
+ else:
+ # 📭 Пусто — но API ответил
+ await update.message.reply_text(
+ "❌ По вашему запросу ничего не найдено.\n\n"
+ "Попробуйте:\n"
+ "• Уточнить запрос (например, «кроссовки мужские»)\n"
+ "• Написать по-другому («наушники» → «наушники беспроводные»)\n"
+ "• Попробовать позже"
+ )
+
+# === Запуск бота ===
 if __name__ == "__main__":
-    print("🤖 Бот запускается...")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+ keep_alive()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+ logger.info("🤖 Инициализация бота...")
+ application = Application.builder().token(TOKEN).build()
 
-    print("✅ Бот запущен. Готов к поиску...")
-    app.run_polling()
+ application.add_handler(CommandHandler("start", start))
+ application.add_handler(CallbackQueryHandler(button_handler))
+ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+ logger.info("✅ Бот запущен. Ожидание сообщений...")
+
+ try:
+ asyncio.run(application.run_polling())
+ except KeyboardInterrupt:
+ logger.info("💤 Бот остановлен вручную.")
+ except Exception as e:
+ logger.critical(f"💥 Критическая ошибка: {e}")
