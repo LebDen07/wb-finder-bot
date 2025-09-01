@@ -68,14 +68,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
  query = update.callback_query
  await query.answer()
  if query.data == "start_searching":
- await query.edit_message_text(
- "Отлично 🔥\n"
- "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
- "Например:\n"
- "• Наушники Sony\n"
- "• Кроссовки\n"
- "• Power Bank"
- )
+ 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
  query = update.message.text.strip()
@@ -122,3 +115,4 @@ if __name__ == "__main__":
  logger.info("💤 Остановлен")
  except Exception as e:
  logger.critical(f"💥 Ошибка: {e}")
+
