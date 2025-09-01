@@ -1,240 +1,214 @@
 # bot.py
 import os
-import sys
 import requests
-import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from flask import Flask
 from threading import Thread
 import logging
-import urllib.parse
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(
- format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
- level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-print(f"🐍 Python: {sys.version}")
-
+# Получаем токен из переменной окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TOKEN:
- logger.error("❗ TELEGRAM_TOKEN не задан")
- sys.exit(1)
 
-# === Flask для keep-alive ===
+if not TOKEN:
+    logger.error("❗ TELEGRAM_TOKEN не задан. Установите в переменных окружения Render.")
+else:
+    logger.info("✅ TELEGRAM_TOKEN загружен")
+
+# === Flask-сервер для поддержания активности (чтобы Render не "убил" процесс) ===
 app_flask = Flask('')
 
 @app_flask.route('/')
 def home():
- return "🟢 Бот работает"
+    return "✅ Бот работает 24/7"
 
-def run_flask():
- port = int(os.getenv('PORT', 10000))
- app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+def run():
+    port = int(os.getenv('PORT', 8080))
+    app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
- t = Thread(target=run_flask, daemon=True)
- t.start()
+    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
+    t = Thread(target=run)
+    t.daemon = True
+    t.start()
 
-# === Поиск товаров — с фолбэком ===
+# === Поиск через API Wildberries с улучшенным User-Agent и логированием ===
 def search_wb(query: str) -> list:
- if not query.strip():
- return 
+    # Резервные URL (если один не работает)
+    urls = [
+        f"https://search.wb.ru/exactmatch/ru/common/v4/search?query={query}&resultset=catalog",
+        f"https://search.wb.ru/exactmatch/ru/search/m/catalog?query={query}",
+        f"https://search.wb.ru/suggestions/ru/catalog?query={query}"
+    ]
 
- keyword = urllib.parse.quote(query.strip())
- logger.info(f"🔍 Поиск: '{query}'")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.wildberries.ru/",
+        "X-Requested-With": "XMLHttpRequest",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site"
+    }
 
- # 🔁 Список URL для попыток (резервные варианты)
- urls = [
- f"https://catalog.wb.ru/catalog/autosearch/data?query={keyword}&dest=-1257786&lang=ru&curr=rub",
- f"https://catalog.wb.ru/catalog/electronics/catalog?keyword={keyword}&dest=-1257786&sort=popular",
- f"https://search.wb.ru/exactmatch/ru/common/v4/search?query={keyword}&dest=-1257786&resultset=items"
- ]
+    for url in urls:
+        try:
+            logger.info(f"🔍 Отправляю запрос к Wildberries: {url}")
+            response = requests.get(url, headers=headers, timeout=15)
 
- headers = {
- "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
- "Accept": "application/json",
- "Referer": "https://www.wildberries.ru/",
- "Origin": "https://www.wildberries.ru",
- "X-Requested-With": "XMLHttpRequest"
- }
+            logger.info(f"📡 Статус ответа: {response.status_code}")
 
- for i, url in enumerate(urls, 1):
- try:
- logger.info(f"🔁 Попытка {i}: GET {url}")
- response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                logger.warning(f"⚠️ Ошибка: статус {response.status_code} для {url}")
+                continue
 
- logger.info(f"📊 Статус: {response.status_code}")
+            # Попробуем распарсить JSON
+            try:
+                data = response.json()
+            except Exception as e:
+                logger.error(f"❌ Не удалось распарсить JSON: {e}")
+                continue
 
- if response.status_code == 200:
- data = response.json()
- logger.info(f"📦 JSON получен: {len(str(data))} символов")
+            # Проверяем, есть ли данные
+            products = data.get("data", {}).get("products", []) or data.get("products", [])
+            if not products:
+                logger.warning(f"📦 Нет товаров в ответе для: {url}")
+                continue
 
- products = 
+            logger.info(f"✅ Найдено {len(products)} товаров")
 
- # Парсим разные форматы ответа
- if "data" in data and "products" in data"data":
- products = data"data""products"
- elif "data" in data and "items" in data"data":
- products = data"data""items"
- elif "products" in data:
- products = data"products"
- else:
- logger.warning(f"⚠️ Нет ключа 'products' в ответе")
- continue
+            results = []
+            for p in products[:20]:
+                try:
+                    price_u = p.get("salePriceU") or p.get("priceU")
+                    if not price_u:
+                        continue
 
- if products:
- logger.info(f"✅ Найдено {len(products)} товаров")
- result = 
- seen_ids = set()
+                    price = price_u // 100
+                    reviews = p.get("reviewCount", 0) or p.get("feedbacks", 0)
+                    name = p.get("name", "Без названия") or p.get("productName", "Без названия")
+                    product_id = p.get("id") or p.get("nmId")
+                    if not product_id:
+                        continue
 
- for p in products:50:
- pid = p.get("id") or p.get("nmId")
- if not pid or pid in seen_ids:
- continue
- seen_ids.add(pid)
+                    link = f"https://www.wildberries.ru/catalog/{product_id}/detail.aspx"
 
- price_u = p.get("priceU") or p.get("salePriceU") or p.get("salePriceU")
- if not price_u:
- continue
+                    if len(name) > 100 or "доставка" in name.lower():
+                        continue
 
- price = price_u // 100
- reviews = p.get("feedbacks", 0) or p.get("feedbackCount", 0)
- name = p.get("name", "Без названия")
- brand = p.get("brand", "").strip()
- full_name = f"{brand} {name}".strip():80
- link = f"https://www.wildberries.ru/catalog/{pid}/detail.aspx"
+                    results.append({
+                        "name": name,
+                        "price": price,
+                        "reviews": reviews,
+                        "link": link
+                    })
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при обработке товара: {e}")
+                    continue
 
- result.append({
- "name": full_name,
- "price": price,
- "reviews": reviews,
- "link": link
- })
+            # Сортировка: по отзывам (↓), потом цена (↑)
+            results.sort(key=lambda x: (-x["reviews"], x["price"]))
+            return results[:5]
 
- result.sort(key=lambda x: (-x"reviews", x"price"))
- return result:5
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"🌐 Ошибка подключения к {url}: {e}")
+            continue
+        except requests.exceptions.Timeout as e:
+            logger.error(f"⏰ Таймаут при запросе к {url}: {e}")
+            continue
+        except Exception as e:
+            logger.error(f"❌ Неизвестная ошибка при запросе: {e}")
+            continue
 
- else:
- logger.warning(f"⚠️ Пустой список товаров в ответе")
- continue
+    logger.error("❌ Все URL не вернули результаты")
+    return []
 
- else:
- logger.warning(f"❌ Ошибка HTTP {response.status_code} на URL {url}")
-
- except Exception as e:
- logger.error(f"💥 Ошибка при запросе к {url}: {e}")
- continue
-
- # Если все API не ответили — возвращаем None (не пустой список!)
- logger.error("❌ Все API не ответили")
- return None  # Отличие: None = ошибка,  = пусто
-
-# === Обработчики ===
+# === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
- keyboard = InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")
- reply_markup = InlineKeyboardMarkup(keyboard)
+    keyboard = [[InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
+        "🔥 Здесь ты найдёшь:\n"
+        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
+        "💰 *Максимальные скидки* и лучшие цены 💸\n\n"
+        "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=reply_markup
+    )
 
- await update.message.reply_text(
- "🎉 *Привет Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
- "🔥 Здесь ты найдёшь:\n"
- "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
- "💰 *Максимальные скидки* и лучшие цены 💸\n"
- "📦 *Проверенные отзывы* от тысяч покупателей 📣\n\n"
- "📌 Подпишись на канал: *Лучшее с Wildberries | DenShop1*(https://t.me/+uGrNl01GXGI4NjI6)\n"
- "Там — только самые горячие скидки и лайфхаки по покупкам 🔥\n\n"
- "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
- parse_mode="Markdown",
- disable_web_page_preview=True,
- reply_markup=reply_markup
- )
-
+# === Обработчик кнопки ===
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
- query = update.callback_query
- await query.answer()
- if query.data == "start_searching":
- await query.edit_message_text(
- "Отлично 🔥\n"
- "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
- "Например:\n"
- "• Наушники Sony\n"
- "• Кроссовки\n"
- "• Power Bank"
- )
+    query = update.callback_query
+    await query.answer()
+    if query.data == "start_searching":
+        await query.edit_message_text(
+            "Отлично! 🔥\n"
+            "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
+            "Например:\n"
+            "• Наушники Sony\n"
+            "• Кроссовки\n"
+            "• Power Bank"
+        )
 
+# === Обработка текстового запроса ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
- query = update.message.text.strip()
- if len(query) < 2:
- await update.message.reply_text("❌ Запрос слишком короткий. Введите хотя бы 2 символа.")
- return
+    query = update.message.text.strip()
+    if len(query) < 2:
+        await update.message.reply_text("❌ Запрос слишком короткий. Введите хотя бы 2 символа.")
+        return
 
- # Показываем, что ищем
- await update.message.reply_text(
- f"🔥 *Лучшее с Wildberries | DenShop1*(https://t.me/+uGrNl01GXGI4NjI6)\n"
- f"🔍 Ищу *ТОПовые товары* по запросу: *{query}*",
- parse_mode="Markdown",
- disable_web_page_preview=True
- )
+    await update.message.reply_text(
+        f"🔥 [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        f"🔍 Ищу: *{query}*",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
 
- # Ищем
- results = search_wb(query)
+    results = search_wb(query)
 
- # === ФОЛБЭК: если API не ответили (ошибка), но есть товары — показываем
- if results is None:
- # ❌ Все API упали — даём ручной поиск
- encoded_query = urllib.parse.quote(query)
- wb_link = f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}"
+    if results:
+        message = "🏆 *Топ-5 самых выгодных предложений:*\n\n"
+        for i, r in enumerate(results, 1):
+            stars = "⭐" * min(5, max(1, r['reviews'] // 50))
+            message += (
+                f"{i}. *{r['name']}*\n"
+                f"   💰 {r['price']:,.0f} ₽  |  {r['reviews']} отзывов  {stars}\n"
+                f"   🔗 [Перейти]({r['link']})\n\n"
+            )
+    else:
+        message = (
+            "❌ Ничего не найдено по запросу *«{query}»*.\n\n"
+            "Попробуй уточнить: например, *«кроссовки мужские»*, *«наушники Bluetooth»*."
+        ).format(query=query)
 
- await update.message.reply_text(
- f"⚠️ *Сервис временно недоступен*\n"
- f"Но вы можете вручную посмотреть лучшие предложения:\n\n"
- f"🔍 *{query} на Wildberries*\n"
- f"🔗 Перейти({wb_link})\n\n"
- f"🔄 Попробуйте позже — иногда сервера перегружены",
- parse_mode="Markdown",
- disable_web_page_preview=True
- )
-
- elif results:
- message = "🏆 *ТОП-5 самых популярных товаров:*\n\n"
- for i, r in enumerate(results, 1):
- stars = "⭐" * min(5, max(1, r'reviews' // 50))
- message += (
- f"{i}. *{r'name'}*\n"
- f" 💰 {r'price':,} ₽ | {r'reviews'} отзывов {stars}\n"
- f" 🔗 Перейти({r'link'})\n\n"
- )
- await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
-
- else:
- # 📭 Пусто — но API ответил
- await update.message.reply_text(
- "❌ По вашему запросу ничего не найдено.\n\n"
- "Попробуйте:\n"
- "• Уточнить запрос (например, «кроссовки мужские»)\n"
- "• Написать по-другому («наушники» → «наушники беспроводные»)\n"
- "• Попробовать позже"
- )
+    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
 
 # === Запуск бота ===
 if __name__ == "__main__":
- keep_alive()
+    keep_alive()  # Запускаем Flask-сервер
 
- logger.info("🤖 Инициализация бота...")
- application = Application.builder().token(TOKEN).build()
+    if not TOKEN:
+        logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
+    else:
+        logger.info("🤖 Бот запускается...")
+        app = Application.builder().token(TOKEN).build()
 
- application.add_handler(CommandHandler("start", start))
- application.add_handler(CallbackQueryHandler(button_handler))
- application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
- logger.info("✅ Бот запущен. Ожидание сообщений...")
+        logger.info("✅ Бот запущен и слушает сообщения...")
+        app.run_polling()
 
- try:
- asyncio.run(application.run_polling())
- except KeyboardInterrupt:
- logger.info("💤 Бот остановлен вручную.")
- except Exception as e:
- logger.critical(f"💥 Критическая ошибка: {e}")
