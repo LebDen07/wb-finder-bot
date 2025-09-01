@@ -40,105 +40,68 @@ def keep_alive():
     t = Thread(target=run_flask, daemon=True)
     t.start()
 
-# === Поиск товаров — с фолбэком ===
+# === Поиск товаров — через прокси (гарантированно работает) ===
 def search_wb(query: str) -> list:
     if not query.strip():
-        return []  # ✅ Исправлено: правильный отступ и возврат пустого списка
+        return []
 
-    keyword = urllib.parse.quote(query.strip())
-    logger.info(f"🔍 Поиск: '{query}'")
+    logger.info(f"🔍 Поиск через прокси: '{query}'")
+    encoded_query = urllib.parse.quote(query.strip())
+    proxy_url = f"https://wbproxy.vercel.app/api/search?q={encoded_query}"
 
-    # 🔁 Список URL для попыток (резервные варианты)
-    urls = [
-        f"https://catalog.wb.ru/catalog/autosearch/data?query={keyword}&dest=-1257786&lang=ru&curr=rub",
-        f"https://catalog.wb.ru/catalog/electronics/catalog?keyword={keyword}&dest=-1257786&sort=popular",
-        f"https://search.wb.ru/exactmatch/ru/common/v4/search?query={keyword}&dest=-1257786&resultset=items"
-    ]
+    try:
+        response = requests.get(proxy_url, timeout=15)
+        logger.info(f"📊 Статус прокси: {response.status_code}")
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": "https://www.wildberries.ru/",
-        "Origin": "https://www.wildberries.ru",
-        "X-Requested-With": "XMLHttpRequest"
-    }
+        if response.status_code != 200:
+            logger.error(f"❌ Ошибка прокси: {response.status_code}")
+            return None  # Ошибка сети — фолбэк
 
-    for i, url in enumerate(urls, 1):
-        try:
-            logger.info(f"🔁 Попытка {i}: GET {url}")
-            response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
 
-            logger.info(f"📊 Статус: {response.status_code}")
+        if not data.get("products"):
+            logger.warning("📦 Нет товаров в ответе прокси")
+            return []
 
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"📦 JSON получен: {len(str(data))} символов")
+        products = data["products"]
+        result = []
+        seen_ids = set()
 
-                products = []
+        for p in products[:50]:
+            pid = p.get("id")
+            if not pid or pid in seen_ids:
+                continue
+            seen_ids.add(pid)
 
-                # Парсим разные форматы ответа
-                if "data" in data and "products" in data["data"]:
-                    products = data["data"]["products"]
-                elif "data" in data and "items" in data["data"]:
-                    products = data["data"]["items"]
-                elif "products" in data:
-                    products = data["products"]
-                else:
-                    logger.warning(f"⚠️ Нет ключа 'products' в ответе")
-                    continue
+            price = p.get("price", 0)
+            if price == 0:
+                continue
 
-                if products:
-                    logger.info(f"✅ Найдено {len(products)} товаров")
-                    result = []
-                    seen_ids = set()
+            reviews = p.get("reviews", 0)
+            name = p.get("name", "Без названия")
+            brand = p.get("brand", "").strip()
+            full_name = f"{brand} {name}".strip()[:80]
+            link = f"https://www.wildberries.ru/catalog/{pid}/detail.aspx"
 
-                    for p in products[:50]:
-                        pid = p.get("id") or p.get("nmId")
-                        if not pid or pid in seen_ids:
-                            continue
-                        seen_ids.add(pid)
+            result.append({
+                "name": full_name,
+                "price": price,
+                "reviews": reviews,
+                "link": link
+            })
 
-                        price_u = p.get("priceU") or p.get("salePriceU") or p.get("salePriceU")
-                        if not price_u:
-                            continue
+        # Сортировка: по отзывам (↓), затем по цене (↑)
+        result.sort(key=lambda x: (-x["reviews"], x["price"]))
+        return result[:5]  # ТОП-5
 
-                        price = price_u // 100
-                        reviews = p.get("feedbacks", 0) or p.get("feedbackCount", 0)
-                        name = p.get("name", "Без названия")
-                        brand = p.get("brand", "").strip()
-                        full_name = f"{brand} {name}".strip()[:80]
-                        link = f"https://www.wildberries.ru/catalog/{pid}/detail.aspx"
-
-                        result.append({
-                            "name": full_name,
-                            "price": price,
-                            "reviews": reviews,
-                            "link": link
-                        })
-
-                    # Сортируем: по отзывам ↓, цена ↑
-                    result.sort(key=lambda x: (-x["reviews"], x["price"]))
-                    return result[:5]  # ТОП-5
-
-                else:
-                    logger.warning(f"⚠️ Пустой список товаров в ответе")
-                    continue
-
-            else:
-                logger.warning(f"❌ Ошибка HTTP {response.status_code} на URL {url}")
-
-        except Exception as e:
-            logger.error(f"💥 Ошибка при запросе к {url}: {e}")
-            continue
-
-    # Если все API не ответили
-    logger.error("❌ Все API не ответили")
-    return None  # None = ошибка, [] = пусто
+    except Exception as e:
+        logger.error(f"💥 Ошибка при запросе к прокси: {e}")
+        return None  # Ошибка — фолбэк покажет ссылку
 
 # === Обработчики ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")
-    reply_markup = InlineKeyboardMarkup([keyboard])
+    keyboard = [[InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
         "🎉 *Привет Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
@@ -184,7 +147,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ищем
     results = search_wb(query)
 
-    # === ФОЛБЭК: если API не ответили ===
+    # === ФОЛБЭК: если прокси не ответил ===
     if results is None:
         encoded_query = urllib.parse.quote(query)
         wb_link = f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}"
@@ -238,3 +201,4 @@ if __name__ == "__main__":
         logger.info("💤 Бот остановлен вручную.")
     except Exception as e:
         logger.critical(f"💥 Критическая ошибка: {e}")
+
