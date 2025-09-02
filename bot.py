@@ -153,4 +153,3 @@ if __name__ == "__main__":
 
         logger.info("✅ Бот запущен и слушает сообщения...")
         app.run_polling()
-
