@@ -1,285 +1,226 @@
-# bot.py
-import os
-import requests
+# wb_finder_bot.py
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from flask import Flask
-from threading import Thread
-import logging
-import urllib.parse
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time
+import re
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ⚙️ Настройки
+TELEGRAM_TOKEN = "8359908342:AAFT5jgAHvDo5wnuZqZEM1A4OkboU4TE4IU"  # 🔥 Замените на свой!
+SEARCH_BASE = "https://www.wildberries.ru/catalog/0/search.aspx?search="
 
-# === Токены из переменных окружения ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Для ИИ (опционально)
+# 🛠️ Настройка драйвера
+def create_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # фоновый режим
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    driver = webdriver.Chrome(options=options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => false});")
+    return driver
 
-if not TELEGRAM_TOKEN:
-    logger.error("❗ TELEGRAM_TOKEN не задан")
-else:
-    logger.info("✅ TELEGRAM_TOKEN загружен")
+# 🔍 Улучшенный парсинг цены и отзывов
+def parse_price_and_reviews(product):
+    price = None
+    reviews = 0
 
-# === Flask для поддержания активности ===
-app_flask = Flask('')
+    # 💰 Парсинг цены
+    try:
+        main_price_elem = product.find_element(By.XPATH, './/span[contains(@class, "price") and not(contains(@class, "old"))]')
+        price_text = main_price_elem.text.strip()
+        price_match = re.search(r'\d+', price_text.replace(' ', ''))
+        if price_match:
+            price = int(price_match.group())
+    except:
+        pass
 
-@app_flask.route('/')
-def home():
-    return "✅ Бот для Ozon работает 24/7"
+    if not price:
+        try:
+            all_prices = product.find_elements(By.XPATH, './/span[contains(text(), "₽")]')
+            for el in all_prices:
+                txt = el.text.strip()
+                match = re.search(r'\d+', txt.replace(' ', ''))
+                if match:
+                    price = int(match.group())
+                    break
+        except:
+            pass
 
-def run():
-    port = int(os.getenv('PORT', 8080))
-    app_flask.run(host='0.0.0.0', port=port)
+    # ⭐ Парсинг отзывов — ищем по всей карточке
+    try:
+        # Вариант 1: REVMT или текст с отзывами
+        review_elements = product.find_elements(By.XPATH,
+            './/span[contains(text(), "отзыв") or contains(text(), "review") or contains(text(), "REVMT")] | '
+            './/div[contains(text(), "отзыв") or contains(text(), "review") or contains(text(), "REVMT")]'
+        )
+        for el in review_elements:
+            text = el.text.strip()
+            match = re.search(r'\d+', text)
+            if match:
+                reviews = int(match.group())
+                break
 
-def keep_alive():
-    logger.info("🚀 Запускаем Flask-сервер...")
-    t = Thread(target=run)
-    t.daemon = True
-    t.start()
+        # Вариант 2: по классу (count, reviews)
+        if reviews == 0:
+            count_elems = product.find_elements(By.XPATH,
+                './/*[contains(@class, "count") or contains(@class, "reviews") or contains(@class, "revmt")]'
+            )
+            for el in count_elems:
+                text = el.get_attribute("textContent").strip()
+                match = re.search(r'\d+', text)
+                if match:
+                    reviews = int(match.group())
+                    break
 
-# === Категории Ozon ===
-CATEGORIES = {
-    "🎧 Наушники": "naushniki",
-    "👟 Кроссовки": "krossovki",
-    "📱 Смартфоны": "smartfony",
-    "⌚ Часы": "chasy",
-    "🎒 Рюкзаки": "ryukzaki",
-    "💻 Ноутбуки": "noutbuki"
-}
+        # Вариант 3: data-count
+        if reviews == 0:
+            try:
+                data_count = product.get_attribute("data-count")
+                if data_count and data_count.isdigit():
+                    reviews = int(data_count)
+            except:
+                pass
 
-BUDGETS = ["до 1000", "до 3000", "до 5000", "до 10000"]
-RATINGS = ["от 4.5", "от 4.7", "от 4.8"]
+        # Вариант 4: REVMT в тексте карточки
+        if reviews == 0:
+            full_text = product.text
+            match = re.search(r'REVMT\D*(\d+)', full_text, re.IGNORECASE)
+            if match:
+                reviews = int(match.group(1))
 
-# === Пример товаров (mock) — можно заменить на API позже ===
-MOCK_PRODUCTS = [
-    {
-        "title": "Наушники беспроводные Xiaomi",
-        "price": "1 999 ₽",
-        "rating": "4.7",
-        "reviews": "128",
-        "image": "https://cdn1.ozone.ru/s3/multimedia-1-w/u10171733814.jpg",
-        "url": "https://www.ozon.ru/product/naushniki-xiaomi-123456"
-    },
-    {
-        "title": "Кроссовки мужские Adidas",
-        "price": "5 499 ₽",
-        "rating": "4.8",
-        "reviews": "203",
-        "image": "https://cdn1.ozone.ru/s3/multimedia-1-x/u10171733815.jpg",
-        "url": "https://www.ozon.ru/product/krossovki-adidas-789012"
-    },
-    {
-        "title": "Смартфон Samsung Galaxy S23",
-        "price": "45 999 ₽",
-        "rating": "4.9",
-        "reviews": "341",
-        "image": "https://cdn1.ozone.ru/s3/multimedia-1-y/u10171733816.jpg",
-        "url": "https://www.ozon.ru/product/smartfon-samsung-345678"
-    }
-]
+    except Exception as e:
+        pass
 
-# === Состояние пользователя ===
-user_state = {}
+    return price, reviews
 
-# === Запрос к ИИ через OpenRouter (для понимания запроса) ===
-def ai_query(prompt: str) -> dict:
-    if not OPENROUTER_API_KEY:
-        # fallback
-        return {"query": prompt, "budget": "до 5000", "rating": "4.7"}
+# 🔎 Поиск на Wildberries
+def search_wb(query: str) -> list:
+    driver = create_driver()
+    results = []
+    url = SEARCH_BASE + query.replace(" ", "+")
     
     try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "qwen/qwen2.5-7b-instruct",
-                "messages": [
-                    {"role": "system", "content": "Ты — ассистент по поиску товаров на Ozon. Извлеки: что ищет, бюджет, рейтинг. Верни JSON: {query, budget, rating}"},
-                    {"role": "user", "content": prompt}
-                ]
-            },
-            timeout=15
+        driver.get(url)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "article.product-card"))
         )
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        # Простой парсинг (в реальности можно использовать json.loads)
-        return eval(content) if "query" in content else {"query": prompt, "budget": "до 5000", "rating": "4.7"}
-    except Exception as e:
-        logger.error(f"❌ Ошибка ИИ: {e}")
-        return {"query": prompt, "budget": "до 5000", "rating": "4.7"}
-
-# === Генерация ссылки на Ozon ===
-def make_ozon_link(query: str, rating: str = "4.7", sorting: str = "rating") -> str:
-    encoded_query = urllib.parse.quote(query)
-    min_rating = rating.replace("от ", "")
-    # Ozon: ?text=...&rating=...&sorting=...
-    return f"https://www.ozon.ru/search/?text={encoded_query}&rating={min_rating}&sorting={sorting}"
-
-# === /start ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_state[user_id] = {"step": "start"}
-
-    keyboard = [[InlineKeyboardButton(name, callback_data=f"cat_{key}")] for name, key in CATEGORIES.items()]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🛒 *Добро пожаловать в бот по поиску товаров на Ozon!*\n\n"
-        "Выберите категорию или напишите, что ищете:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
-
-# === Обработчик кнопок ===
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    data = query.data
-
-    if data.startswith("cat_"):
-        search_key = data.replace("cat_", "")
-        user_state[user_id]["query"] = search_key
-        user_state[user_id]["step"] = "budget"
-
-        keyboard = [[InlineKeyboardButton(budg, callback_data=f"budg_{budg}")] for budg in BUDGETS]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Вы ищете: *{search_key}*\n\nУкажите бюджет:", reply_markup=reply_markup, parse_mode="Markdown")
-
-    elif data.startswith("budg_"):
-        budget = data.replace("budg_", "")
-        user_state[user_id]["budget"] = budget
-        user_state[user_id]["step"] = "rating"
-
-        keyboard = [[InlineKeyboardButton(rat, callback_data=f"rat_{rat}")] for rat in RATINGS]
-        keyboard.append([InlineKeyboardButton("Пропустить", callback_data="rat_от 4.5")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Укажите минимальный рейтинг:", reply_markup=reply_markup, parse_mode="Markdown")
-
-    elif data.startswith("rat_"):
-        rating = data.replace("rat_", "")
-        user_state[user_id]["rating"] = rating
-        final_query = user_state[user_id]["query"]
-        budget = user_state[user_id]["budget"]
-
-        # Генерируем ссылку
-        ozon_link = make_ozon_link(final_query, rating)
-
-        # Показываем "Ищу..."
-        await query.edit_message_text("🔍 *Ищу лучшие варианты на Ozon...*", parse_mode="Markdown")
-
-        # Показываем mock-товары
-        for product in MOCK_PRODUCTS:
-            if final_query.lower() in product["title"].lower():
-                caption = (
-                    f"🛍️ *{product['title']}*\n"
-                    f"💰 Цена: *{product['price']}*\n"
-                    f"⭐ Рейтинг: *{product['rating']}* ({product['reviews']} отзывов)\n\n"
-                    f"[🛒 Перейти к товару]({product['url']})"
-                )
-                try:
-                    await context.bot.send_photo(
-                        chat_id=query.message.chat_id,
-                        photo=product["image"],
-                        caption=caption,
-                        parse_mode="Markdown",
-                        disable_web_page_preview=True
-                    )
-                except:
-                    await context.bot.send_message(
-                        chat_id=query.message.chat_id,
-                        text=caption,
-                        parse_mode="Markdown",
-                        disable_web_page_preview=True
-                    )
-
-        # Кнопка "Посмотреть все на Ozon"
-        keyboard = [[InlineKeyboardButton("🌐 Посмотреть все на Ozon", url=ozon_link)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="✅ Вот лучшие предложения. Хотите увидеть больше?",
-            reply_markup=reply_markup
-        )
-
-# === Обработка текстового запроса (через ИИ) ===
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    if len(text) < 2:
-        await update.message.reply_text("❌ Запрос слишком короткий.")
-        return
-
-    # Отправляем в ИИ
-    ai_result = ai_query(text)
-    query = ai_result.get("query", text)
-    budget = ai_result.get("budget", "до 5000")
-    rating = ai_result.get("rating", "4.7")
-
-    # Генерируем ссылку
-    ozon_link = make_ozon_link(query, rating)
-
-    await update.message.reply_text(
-        f"🔍 *Ищу на Ozon:* `{query}`\n"
-        f"💰 Бюджет: `{budget}`\n"
-        f"⭐ Рейтинг: `{rating}`",
-        parse_mode="Markdown"
-    )
-
-    # Показываем mock-товары
-    for product in MOCK_PRODUCTS:
-        if query.lower() in product["title"].lower():
-            caption = (
-                f"🛍️ *{product['title']}*\n"
-                f"💰 Цена: *{product['price']}*\n"
-                f"⭐ Рейтинг: *{product['rating']}* ({product['reviews']} отзывов)\n\n"
-                f"[🛒 Перейти к товару]({product['url']})"
-            )
+        products = driver.find_elements(By.CSS_SELECTOR, "article.product-card")
+        
+        for product in products[:20]:
             try:
-                await context.bot.send_photo(
-                    chat_id=update.message.chat_id,
-                    photo=product["image"],
-                    caption=caption,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
-            except:
-                await context.bot.send_message(
-                    chat_id=update.message.chat_id,
-                    text=caption,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
+                link_elem = product.find_element(By.CSS_SELECTOR, "a[href*='/catalog/']")
+                name = link_elem.get_attribute("aria-label")
+                if not name or len(name) > 100 or "доставка" in name.lower():
+                    continue
 
+                # Передаём всю карточку
+                price, reviews = parse_price_and_reviews(product)
+
+                if not price:
+                    continue
+
+                link = link_elem.get_attribute("href")
+
+                results.append({
+                    "name": name,
+                    "price": price,
+                    "reviews": reviews,
+                    "link": link
+                })
+            except Exception as e:
+                continue
+
+        # Сортировка: больше отзывов → дешевле
+        results.sort(key=lambda x: (-x["reviews"], x["price"]))
+
+    except Exception as e:
+        print(f"❌ Ошибка поиска: {e}")
+    finally:
+        driver.quit()
+
+    return results[:5]
+
+# 🤖 Команда /start с анимацией, ссылкой и кнопкой
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Кнопка
-    keyboard = [[InlineKeyboardButton("🌐 Посмотреть все на Ozon", url=ozon_link)]]
+    keyboard = [[InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(
-        chat_id=update.message.chat_id,
-        text="✅ Вот лучшие предложения на Ozon!",
+
+    # Текст с гиперссылкой на канал
+    await update.message.reply_text(
+        "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
+        "🔥 Здесь ты найдёшь:\n"
+        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
+        "💰 *Максимальные скидки* и лучшие цены 💸\n"
+        "📦 *Проверенные отзывы* от тысяч покупателей 📣\n\n"
+        "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        "Там — только самые горячие скидки и лайфхаки по покупкам! 🔥\n\n"
+        "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
         reply_markup=reply_markup
     )
 
-# === Запуск бота ===
-if __name__ == "__main__":
-    keep_alive()  # Запускаем Flask
+# 🤖 Обработчик кнопки
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "start_searching":
+        await query.edit_message_text(
+            "Отлично! 🔥\n"
+            "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
+            "Например:\n"
+            "• Наушники Sony\n"
+            "• Кроссовки\n"
+            "• Power Bank"
+        )
 
-    if not TELEGRAM_TOKEN:
-        logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
+# 🤖 Обработка текстовых сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+    if len(query) < 2:
+        await update.message.reply_text("❌ Запрос слишком короткий.")
+        return
+
+    # Сообщение с гиперссылкой на канал
+    await update.message.reply_text(
+        f"🔥 [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        f"Ищу: *{query}*",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
+
+    results = search_wb(query)
+
+    if results:
+        message = "🏆 *Топ-5 самых выгодных предложений:*\n\n"
+        for i, r in enumerate(results, 1):
+            stars = "⭐" * min(5, max(1, (r['reviews'] // 50)))
+            message += (
+                f"{i}. *{r['name']}*\n"
+                f"   💰 {r['price']:,.0f} ₽  |  {r['reviews']} отзывов  {stars}\n"
+                f"   🔗 [Перейти]({r['link']})\n\n"
+            )
     else:
-        logger.info("🤖 Бот для Ozon запускается...")
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
+        message = "❌ Ничего не найдено. Попробуй уточнить запрос."
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(button_handler))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
 
-        logger.info("✅ Бот запущен и слушает сообщения...")
-        app.run_polling()
+# 🚀 Запуск
+if __name__ == "__main__":
+    print("🤖 Бот запускается...")
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("✅ Бот запущен. Готов к поиску...")
+    app.run_polling()
