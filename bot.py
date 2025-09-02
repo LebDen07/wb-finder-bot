@@ -1,7 +1,8 @@
 # bot.py
 import os
 import requests
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatAction
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.constants import ChatAction  # ✅ Правильный импорт
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from flask import Flask
 from threading import Thread
@@ -18,17 +19,19 @@ logger = logging.getLogger(__name__)
 
 # === Токены и настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Для ИИ (опционально)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Опционально, для ИИ
 
+# 🔗 Ссылки
 CHANNEL_LINK = "https://t.me/+uGrNl01GXGI4NjI6"
 SEARCH_BASE = "https://www.wildberries.ru/catalog/0/search.aspx?"
 
+# Проверка токена
 if not TELEGRAM_TOKEN:
-    logger.error("❗ TELEGRAM_TOKEN не задан")
+    logger.error("❗ TELEGRAM_TOKEN не задан. Установите в переменных окружения Render.")
 else:
     logger.info("✅ TELEGRAM_TOKEN загружен")
 
-# === Flask для поддержания активности ===
+# === Flask для поддержания активности (чтобы Render не "убил" процесс) ===
 app_flask = Flask('')
 
 @app_flask.route('/')
@@ -40,15 +43,15 @@ def run():
     app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    logger.info("🚀 Запускаем Flask-сервер...")
+    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
     t = Thread(target=run)
     t.daemon = True
     t.start()
 
-# === Состояние пользователя ===
+# === Состояние пользователя (опционально) ===
 user_data = {}
 
-# === Пример "умного" поиска с фильтрами ===
+# === Генерация ссылки с фильтрами ===
 def build_wb_link(query: str, rating: str = "4.7", sort: str = "popular", max_price: str = None) -> str:
     params = {
         "search": query,
@@ -56,67 +59,67 @@ def build_wb_link(query: str, rating: str = "4.7", sort: str = "popular", max_pr
         "rating": rating.replace("от ", "")
     }
     if max_price:
-        params["price"] = f"0;{max_price}"
+        # Фильтр по цене: 0 до max_price
+        params["priceU"] = f"0;{max_price}"
     encoded = urllib.parse.urlencode(params)
     return f"https://www.wildberries.ru/catalog/0/search.aspx?{encoded}"
 
-# === Генерация топ-5 ссылок (можно заменить на API) ===
+# === Пример топ-5 ссылок (можно заменить на API позже) ===
 def get_top5_links(query: str) -> list:
     base = query.replace(" ", "+")
     return [
-        {"name": f"🔥 {query.capitalize()} — Лидер продаж", "price": 2999, "reviews": 150, "link": build_wb_link(base, "4.7")},
-        {"name": f"💎 {query.capitalize()} — Премиум", "price": 4599, "reviews": 98, "link": build_wb_link(base, "4.8")},
-        {"name": f"💰 {query.capitalize()} — Бюджет", "price": 1899, "reviews": 220, "link": build_wb_link(base, "4.5", max_price="3000")},
-        {"name": f"⭐ {query.capitalize()} — С высоким рейтингом", "price": 3499, "reviews": 176, "link": build_wb_link(base, "4.9")},
-        {"name": f"📦 {query.capitalize()} — Хит сезона", "price": 3999, "reviews": 301, "link": build_wb_link(base, "4.7", "new")}
+        {
+            "name": f"🔥 {query.capitalize()} — Лидер продаж",
+            "price": 2999,
+            "reviews": 150,
+            "link": build_wb_link(base, "4.7")
+        },
+        {
+            "name": f"💎 {query.capitalize()} — Премиум версия",
+            "price": 4599,
+            "reviews": 98,
+            "link": build_wb_link(base, "4.8")
+        },
+        {
+            "name": f"💰 {query.capitalize()} — Бюджетный вариант",
+            "price": 1899,
+            "reviews": 220,
+            "link": build_wb_link(base, "4.5", max_price="3000")
+        },
+        {
+            "name": f"⭐ {query.capitalize()} — Высокий рейтинг",
+            "price": 3499,
+            "reviews": 176,
+            "link": build_wb_link(base, "4.9")
+        },
+        {
+            "name": f"📦 {query.capitalize()} — Хит сезона",
+            "price": 3999,
+            "reviews": 301,
+            "link": build_wb_link(base, "4.7", "new")
+        }
     ]
 
-# === ИИ-анализ запроса (через OpenRouter) ===
-def ai_understand(text: str) -> dict:
-    if not OPENROUTER_API_KEY:
-        return {"intent": "search", "query": text, "budget": None, "rating": "4.7"}
-
-    try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-            json={
-                "model": "qwen/qwen2.5-7b-instruct",
-                "messages": [
-                    {"role": "system", "content": "Определи: что ищет, бюджет, рейтинг. Верни JSON: {query, budget, rating}"},
-                    {"role": "user", "content": text}
-                ]
-            },
-            timeout=10
-        )
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        import json
-        return json.loads(content.replace("'", '"'))
-    except Exception as e:
-        logger.error(f"❌ ИИ ошибка: {e}")
-        return {"query": text, "budget": None, "rating": "4.7"}
-
-# === /start — красивое приветствие ===
+# === Команда /start — красивое приветствие ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data[user_id] = {"step": "start"}
 
     keyboard = [
-        [InlineKeyboardButton("🔍 Найти товар", callback_data="search")],
-        [InlineKeyboardButton("📌 Подписаться", url=CHANNEL_LINK)]
+        [InlineKeyboardButton("🔍 Начать поиск", callback_data="search")],
+        [InlineKeyboardButton("📌 Подписаться на канал", url=CHANNEL_LINK)]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "🎉 *Привет! Я — ваш личный ассистент по поиску на Wildberries!* 🛍️\n\n"
-        "Я помогу найти:\n"
-        "✅ *Топовые товары* с высоким рейтингом ⭐\n"
-        "💰 *Лучшие цены* и скидки 💸\n"
-        "📦 *Проверенные отзывы* от реальных покупателей 📣\n\n"
-        "📌 *Подпишитесь на канал:* [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
-        "Там — только горячие скидки и лайфхаки! 🔥\n\n"
-        "Выберите действие:",
+        "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
+        "🔥 Здесь ты найдёшь:\n"
+        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
+        "💰 *Максимальные скидки* и лучшие цены 💸\n"
+        "📦 *Проверенные отзывы* от тысяч покупателей 📣\n\n"
+        "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        "Там — только самые горячие скидки и лайфхаки! 🔥\n\n"
+        "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
         parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=reply_markup
@@ -129,7 +132,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if query.data == "search":
-        await query.edit_message_text("Что вы ищете? Напишите, например: *наушники*, *кроссовки*, *power bank*", parse_mode="Markdown")
+        await query.edit_message_text(
+            "Отлично! 🔥\n"
+            "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
+            "Например:\n"
+            "• Наушники Sony\n"
+            "• Кроссовки\n"
+            "• Power Bank"
+        )
 
 # === Обработка текстового запроса ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,51 +150,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Запрос слишком короткий. Введите хотя бы 2 символа.")
         return
 
-    # "печатает..."
+    # Эффект "печатает..."
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
-    time.sleep(1.5)
+    time.sleep(1.5)  # Имитация поиска
 
-    # Показываем, что ищем
+    # Сообщение с гиперссылкой на канал
     await update.message.reply_text(
-        f"🔍 *Ищу лучшие варианты для:* `{text}`\n"
-        f"⭐ *Минимальный рейтинг:* `4.7`",
-        parse_mode="Markdown"
+        f"🔥 [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+        f"🔍 Ищу: *{text}*",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
     )
 
-    # Анализируем через ИИ
-    ai_result = ai_understand(text)
-    search_query = ai_result.get("query", text)
+    # Получаем топ-5 ссылок
+    results = get_top5_links(text)
 
-    # Получаем топ-5
-    results = get_top5_links(search_query)
+    if results:
+        message = "🏆 *Топ-5 самых выгодных предложений:*\n\n"
+        for i, r in enumerate(results, 1):
+            stars = "⭐" * min(5, max(1, r['reviews'] // 50))
+            message += (
+                f"{i}. *{r['name']}*\n"
+                f"   💰 {r['price']:,} ₽  |  {r['reviews']} отзывов  {stars}\n"
+                f"   🔗 [Перейти]({r['link']})\n\n"
+            )
+    else:
+        message = "❌ Ничего не найдено. Попробуй уточнить запрос."
 
-    # Отправляем карточки
-    for i, r in enumerate(results, 1):
-        stars = "⭐" * min(5, max(1, r['reviews'] // 50))
-        message = (
-            f"{i}. *{r['name']}*\n"
-            f"   💰 {r['price']:,} ₽  |  {r['reviews']} отзывов  {stars}\n"
-            f"   🔗 [Перейти]({r['link']})"
-        )
-        await context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text=message,
-            parse_mode="Markdown",
-            disable_web_page_preview=True
-        )
-
-    # Кнопка "Ещё"
-    keyboard = [[InlineKeyboardButton("🔄 Искать снова", callback_data="search")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(
-        chat_id=update.message.chat_id,
-        text="✅ Готово! Хотите найти что-то ещё?",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
 
 # === Запуск бота ===
 if __name__ == "__main__":
-    keep_alive()  # Запускаем Flask
+    keep_alive()  # Запускаем Flask-сервер
 
     if not TELEGRAM_TOKEN:
         logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
