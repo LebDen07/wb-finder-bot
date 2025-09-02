@@ -7,6 +7,7 @@ from flask import Flask
 from threading import Thread
 import logging
 import urllib.parse
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -41,10 +42,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# === Состояние пользователя ===
-user_data = {}
-
-# === Генерация ссылок в зависимости от выбора ===
+# === Генерация ссылки с параметрами ===
 def build_link(query: str, params: dict) -> str:
     base = "https://www.wildberries.ru/catalog/0/search.aspx"
     all_params = {"search": query, **params}
@@ -53,9 +51,6 @@ def build_link(query: str, params: dict) -> str:
 
 # === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_data[user_id] = {}
-
     keyboard = [
         [InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]
     ]
@@ -77,7 +72,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "start_searching":
         await query.edit_message_text(
             "Отлично! 🔥\n"
@@ -90,7 +84,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Обработка текстового запроса ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     query = update.message.text.strip()
 
     if len(query) < 2:
@@ -99,31 +92,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Эффект "печатает..."
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
-    await asyncio.sleep(1.2)
+    await asyncio.sleep(1.5)
 
-    # Сохраняем запрос
-    user_data[user_id]["query"] = query
-
-    # Кодируем запрос для URL
+    # Кодируем запрос
     encoded_query = urllib.parse.quote(query)
 
     # Кнопки с разными ссылками
     keyboard = [
-        [InlineKeyboardButton("1. Лидер продаж", url=build_link(encoded_query, {"page": "1", "sort": "popular"}))],
-        [InlineKeyboardButton("2. Премиум версия", url=build_link(encoded_query, {"page": "1", "sort": "rate", "priceU": "10000;1000000"}))],
-        [InlineKeyboardButton("3. Бюджетный вариант", url=build_link(encoded_query, {"page": "1", "priceU": "0;3000"}))],
-        [InlineKeyboardButton("4. Высокий рейтинг", url=build_link(encoded_query, {"page": "1", "rating": "4.9"}))],
-        [InlineKeyboardButton("5. Хит сезона", url=build_link(encoded_query, {"page": "1", "sort": "popular", "dest": "-1257786"}))]
+        [InlineKeyboardButton("🏆 1. Лидер продаж", url=build_link(encoded_query, {"page": "1", "sort": "popular"}))],
+        [InlineKeyboardButton("💎 2. Премиум-версия", url=build_link(encoded_query, {"page": "1", "sort": "pricedown", "foriginal": "1"}))],
+        [InlineKeyboardButton("💰 3. Бюджетный вариант", url=build_link(encoded_query, {"page": "1", "sort": "priceup", "foriginal": "1"}))],
+        [InlineKeyboardButton("⭐ 4. Высокий рейтинг", url=build_link(encoded_query, {"page": "1", "rating": "4.9"}))],
+        [InlineKeyboardButton("🔥 5. Хит сезона", url=build_link(encoded_query, {"page": "1", "sort": "popular", "dest": "-1257786"}))]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем сообщение с кнопками
+    # Отправляем сообщение с меню
     message = (
-        f"🔍 *Вы искали:* `{query}`\n\n"
+        f"🔍 *Вы ищете:* `{query}`\n\n"
         "Выберите категорию поиска:"
     )
 
-    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
+    await update.message.reply_text(
+        message,
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
 
 # === Запуск бота ===
 if __name__ == "__main__":
