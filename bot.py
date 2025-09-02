@@ -12,22 +12,34 @@ import urllib.parse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Токены
+# === Получаем токены из переменных окружения ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Flask для Render
+# Проверка токенов
+if not TELEGRAM_TOKEN:
+    logger.error("❗ TELEGRAM_TOKEN не задан. Установите в переменных окружения Render.")
+else:
+    logger.info("✅ TELEGRAM_TOKEN загружен")
+
+if not OPENROUTER_API_KEY:
+    logger.error("❗ OPENROUTER_API_KEY не задан. Получите на https://openrouter.ai/keys")
+else:
+    logger.info("✅ OPENROUTER_API_KEY загружен")
+
+# === Flask-сервер для поддержания активности ===
 app_flask = Flask('')
 
 @app_flask.route('/')
 def home():
-    return "🤖 Умный бот для Wildberries работает 24/7"
+    return "✅ Бот работает 24/7"
 
 def run():
     port = int(os.getenv('PORT', 8080))
     app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
+    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
     t = Thread(target=run)
     t.daemon = True
     t.start()
@@ -42,7 +54,7 @@ def ai_query(prompt: str, history: str = "") -> str:
                 "Content-Type": "application/json"
             },
             json={
-                "model": "qwen/qwen2.5-7b-instruct",  # можно заменить на llama-3.1-8b-instant
+                "model": "qwen/qwen2.5-7b-instruct",
                 "messages": [
                     {"role": "system", "content": "Ты — умный помощник по поиску товаров на Wildberries. Задавай уточняющие вопросы, чтобы понять, что нужно пользователю. В конце сформулируй краткий поисковой запрос на русском. Не предлагай ссылки, просто сформулируй запрос."},  # noqa: E501
                     {"role": "user", "content": history + "\n\n" + prompt}
@@ -53,13 +65,16 @@ def ai_query(prompt: str, history: str = "") -> str:
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         logger.error(f"❌ Ошибка ИИ: {e}")
-        return "Не удалось сформировать запрос. Попробуйте: наушники, кроссовки и т.д."
+        return "Не удалось сформировать запрос. Попробуйте уточнить: наушники, кроссовки и т.д."
 
 # === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Сбрасываем историю диалога
     context.user_data["history"] = ""
+
     keyboard = [[InlineKeyboardButton("🔍 Начать диалог", callback_data="start_chat")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
         "👋 Привет! Я — *умный помощник* по поиску товаров на Wildberries.\n\n"
         "Я задам несколько вопросов, чтобы точнее найти то, что тебе нужно.\n\n"
@@ -70,29 +85,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+# === Обработчик кнопки ===
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("Что вы ищете сегодня?")
 
-# === Обработка сообщений ===
+# === Обработка текстового запроса ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
+    if len(user_message) < 2:
+        await update.message.reply_text("❌ Запрос слишком короткий. Введите хотя бы 2 символа.")
+        return
+
+    # Получаем историю диалога
     history = context.user_data.get("history", "")
 
     # Отправляем в ИИ
     ai_response = ai_query(user_message, history)
 
-    # Если ИИ вернул запрос — генерируем ссылку
-    if any(word in ai_response.lower() for word in ["наушники", "кроссовки", "смартфон", "ищу", "найди", "подбери"]):
+    # Если ИИ вернул похожий на запрос текст — считаем, что это искомый запрос
+    if any(kw in ai_response.lower() for kw in ["наушники", "кроссовки", "смартфон", "ищу", "найди", "подбери", "покажи", "рекомендуй"]):
         # Чистим ответ
         search_query = "".join(c for c in ai_response if c.isalnum() or c in " -.")
-        search_query = search_query.replace("Ищу ", "").replace("Найди ", "").strip()
+        search_query = search_query.replace("Ищу ", "").replace("Найди ", "").replace("Подбери ", "").strip()
+        if len(search_query) < 2:
+            search_query = user_message  # резерв
 
         # Кодируем для URL
         encoded_query = urllib.parse.quote(search_query)
 
-        # Генерируем ссылку с фильтрами
+        # Генерируем ссылку с фильтрами: популярность, рейтинг ≥ 4.7
         wb_link = f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&sort=popular&rating=4.7"
 
         message = (
@@ -112,19 +135,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Запуск бота ===
 if __name__ == "__main__":
-    keep_alive()
+    keep_alive()  # Запускаем Flask-сервер
 
+    # Проверяем, заданы ли токены
     if not TELEGRAM_TOKEN:
-        logger.error("❗ Не задан TELEGRAM_TOKEN")
+        logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
     elif not OPENROUTER_API_KEY:
-        logger.error("❗ Не задан OPENROUTER_API_KEY")
+        logger.error("❗ Бот не может запуститься: не задан OPENROUTER_API_KEY")
     else:
         logger.info("🤖 Бот запускается...")
-        app = Application.builder().token(TOKEN).build()
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+        # Добавляем хендлеры
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CallbackQueryHandler(button_handler))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        logger.info("✅ Бот запущен и работает 24/7!")
+        logger.info("✅ Бот запущен и слушает сообщения...")
         app.run_polling()
+
