@@ -25,7 +25,7 @@ if not TELEGRAM_TOKEN:
 else:
     logger.info("✅ TELEGRAM_TOKEN загружен")
 
-# === Flask для поддержания активности (чтобы Render не "убил" процесс) ===
+# === Flask для поддержания активности ===
 app_flask = Flask('')
 
 @app_flask.route('/')
@@ -37,19 +37,29 @@ def run():
     app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
+    logger.info("🚀 Запускаем Flask-сервер...")
     t = Thread(target=run)
     t.daemon = True
     t.start()
 
-# === Генерация ссылки с параметрами ===
-def build_link(query: str, params: dict) -> str:
+# === Генерация ссылки с правильными параметрами ===
+def build_wb_link(query: str, **filters) -> str:
     base = "https://www.wildberries.ru/catalog/0/search.aspx"
-    all_params = {"search": query, **params}
-    encoded = urllib.parse.urlencode(all_params)
-    return f"{base}?{encoded}"
+    
+    # Базовые параметры
+    params = {
+        "search": query,
+        "dest": "-1257786"  # Россия
+    }
+    
+    # Добавляем фильтры
+    params.update(filters)
+    
+    # Кодируем и формируем URL
+    encoded_params = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    return f"{base}?{encoded_params}"
 
-# === Команда /start — кинематографическое приветствие ===
+# === Команда /start — красивое приветствие ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -57,40 +67,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     await asyncio.sleep(1.2)
 
-    # Приветствие 1
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="💫 Добро пожаловать в...",
-        parse_mode="Markdown"
-    )
-
+    # Последовательное приветствие
+    await context.bot.send_message(chat_id=chat_id, text="💫 Добро пожаловать в...")
+    await asyncio.sleep(0.8)
+    await context.bot.send_message(chat_id=chat_id, text="🛒 *Лучшее с Wildberries | DenShop1*", parse_mode="Markdown")
+    await asyncio.sleep(0.8)
+    await context.bot.send_message(chat_id=chat_id, text="🔍 Ваш личный помощник в поиске лучших товаров.")
     await asyncio.sleep(1.0)
-
-    # Приветствие 2
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🛒 *Лучшее с Wildberries | DenShop1*",
-        parse_mode="Markdown"
-    )
-
-    await asyncio.sleep(1.0)
-
-    # Приветствие 3
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🔍 Ваш личный помощник в поиске самых выгодных предложений на Wildberries.",
-        parse_mode="Markdown"
-    )
-
-    await asyncio.sleep(1.2)
 
     # Кнопка
-    keyboard = [
-        [InlineKeyboardButton("✨ Начать поиск", callback_data="start_searching")]
-    ]
+    keyboard = [[InlineKeyboardButton("✨ Начать поиск", callback_data="start_searching")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Финальное сообщение + канал
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
@@ -110,7 +98,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "start_searching":
         await query.edit_message_text(
             "Отлично! 🔥\n"
@@ -149,13 +136,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Кодируем запрос
     encoded_query = urllib.parse.quote(query)
 
-    # Кнопки с разными ссылками
+    # Кнопки с правильными фильтрами
     keyboard = [
-        [InlineKeyboardButton("🏆 1. Лидер продаж", url=build_link(encoded_query, {"page": "1", "sort": "popular"}))],
-        [InlineKeyboardButton("💎 2. Премиум-версия", url=build_link(encoded_query, {"page": "1", "sort": "pricedown", "foriginal": "1"}))],
-        [InlineKeyboardButton("💰 3. Бюджетный вариант", url=build_link(encoded_query, {"page": "1", "sort": "priceup", "foriginal": "1"}))],
-        [InlineKeyboardButton("⭐ 4. Высокий рейтинг", url=build_link(encoded_query, {"page": "1", "rating": "4.9"}))],
-        [InlineKeyboardButton("🔥 5. Хит сезона", url=build_link(encoded_query, {"page": "1", "sort": "popular", "dest": "-1257786"}))]
+        [
+            InlineKeyboardButton(
+                "🏆 1. Лидер продаж",
+                url=build_wb_link(encoded_query, sort="popular")
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💎 2. Премиум-версия",
+                url=build_wb_link(encoded_query, sort="pricedown", foriginal="1")
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💰 3. Бюджетный вариант",
+                url=build_wb_link(encoded_query, sort="priceup", foriginal="1")
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⭐ 4. Высокий рейтинг",
+                url=build_wb_link(encoded_query, rating="4.9")
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔥 5. Хит сезона",
+                url=build_wb_link(encoded_query, sort="popular", dest="-1257786")
+            )
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
