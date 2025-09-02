@@ -42,25 +42,6 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# === Генерация ссылки с правильными параметрами ===
-def build_wb_link(query: str, sort: str = None, rating: str = None) -> str:
-    base = "https://www.wildberries.ru/catalog/0/search.aspx"
-    
-    # Единственный рабочий dest (Россия)
-    params = {
-        "search": query,
-        "dest": "-1257786"
-    }
-    
-    if sort:
-        params["sort"] = sort
-    if rating:
-        params["rating"] = rating
-
-    # Кодируем корректно (с пробелами как %20)
-    encoded_params = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-    return f"{base}?{encoded_params}"
-
 # === Команда /start — новое приветствие ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -91,7 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await asyncio.sleep(1.0)
 
-    # Кнопка "Начать поиск"
+    # Кнопка
     keyboard = [
         [InlineKeyboardButton("✨ Начать поиск", callback_data="start_searching")]
     ]
@@ -143,24 +124,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     await asyncio.sleep(1.8)
 
-    # Кодируем запрос
-    encoded_query = urllib.parse.quote(query)
-
-    # Кнопки с фильтрами
+    # Кнопки с подсказками (не ссылки, а советы по фильтрам)
     keyboard = [
-        [InlineKeyboardButton("🏆 1. Лидер продаж", url=build_wb_link(encoded_query, sort="popular"))],
-        [InlineKeyboardButton("💎 2. Самые дорогие", url=build_wb_link(encoded_query, sort="pricedown"))],
-        [InlineKeyboardButton("💰 3. Самые дешёвые", url=build_wb_link(encoded_query, sort="priceup"))],
-        [InlineKeyboardButton("⭐ 4. Высокий рейтинг", url=build_wb_link(encoded_query, rating="4.9"))],
-        [InlineKeyboardButton("🔥 5. Хит сезона", url=build_wb_link(encoded_query, sort="popular"))],
-        [InlineKeyboardButton("🔄 Вернуться к поиску другого товара", callback_data="start_searching")]
+        [
+            InlineKeyboardButton(
+                "🏆 1. Лидер продаж",
+                callback_data=f"tip|{query}|Сортировка: по популярности"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💎 2. Самые дорогие",
+                callback_data=f"tip|{query}|Сортировка: от дорогих"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💰 3. Самые дешёвые",
+                callback_data=f"tip|{query}|Сортировка: от дешёвых"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⭐ 4. Высокий рейтинг",
+                callback_data=f"tip|{query}|Фильтр: рейтинг 4.9+"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔥 5. Хит сезона",
+                callback_data=f"tip|{query}|Сортировка: по популярности + Россия"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔄 Вернуться к поиску другого товара",
+                callback_data="start_searching"
+            )
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем меню
     message = (
-        f"🎯 *Вот как можно искать «{query}»:*\n\n"
-        "Выберите подходящий вариант:"
+        f"🎯 *Как искать «{query}» на Wildberries:*\n\n"
+        "Нажмите на вариант — я подскажу, какие фильтры применить вручную."
     )
 
     await context.bot.send_message(
@@ -169,6 +176,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=reply_markup
     )
+
+# === Обработчик советов ===
+async def tip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data  # tip|запрос|совет
+    parts = data.split("|", 2)
+    if len(parts) != 3:
+        return
+
+    search_query, tip = parts[1], parts[2]
+
+    instruction = (
+        f"🔍 *Как найти «{search_query}» на Wildberries:*\n\n"
+        f"1. Перейдите на [Wildberries](https://www.wildberries.ru)\n"
+        f"2. Введите в поиске: `{search_query}`\n"
+        f"3. Примените фильтр: *{tip}*\n"
+        f"4. Нажмите «Применить»\n\n"
+        f"✅ Теперь вы видите лучшие предложения!"
+    )
+
+    # Кнопка "Назад"
+    keyboard = [[InlineKeyboardButton("🔙 Назад к выбору", callback_data="back_to_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(instruction, parse_mode="Markdown", reply_markup=reply_markup)
+
+# === Обработчик "Назад" ===
+async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    # Просто повторяем меню
+    search_query = query.message.text.split("«")[1].split("»")[0]  # извлекаем запрос
+
+    keyboard = [
+        [InlineKeyboardButton("🏆 1. Лидер продаж", callback_data=f"tip|{search_query}|Сортировка: по популярности")],
+        [InlineKeyboardButton("💎 2. Самые дорогие", callback_data=f"tip|{search_query}|Сортировка: от дорогих")],
+        [InlineKeyboardButton("💰 3. Самые дешёвые", callback_data=f"tip|{search_query}|Сортировка: от дешёвых")],
+        [InlineKeyboardButton("⭐ 4. Высокий рейтинг", callback_data=f"tip|{search_query}|Фильтр: рейтинг 4.9+")],
+        [InlineKeyboardButton("🔥 5. Хит сезона", callback_data=f"tip|{search_query}|Сортировка: по популярности + Россия")],
+        [InlineKeyboardButton("🔄 Вернуться к поиску другого товара", callback_data="start_searching")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    message = (
+        f"🎯 *Как искать «{search_query}» на Wildberries:*\n\n"
+        "Нажмите на вариант — я подскажу, какие фильтры применить вручную."
+    )
+
+    await query.edit_message_text(message, parse_mode="Markdown", reply_markup=reply_markup)
 
 # === Запуск бота ===
 if __name__ == "__main__":
@@ -181,7 +240,9 @@ if __name__ == "__main__":
         app = Application.builder().token(TELEGRAM_TOKEN).build()
 
         app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(CallbackQueryHandler(button_handler, pattern="^start_searching$"))
+        app.add_handler(CallbackQueryHandler(tip_handler, pattern="^tip\\|"))
+        app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
         logger.info("✅ Бот запущен и слушает сообщения...")
