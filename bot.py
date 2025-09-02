@@ -43,23 +43,25 @@ def keep_alive():
     t.start()
 
 # === Генерация ссылки с правильными параметрами ===
-def build_wb_link(query: str, **filters) -> str:
+def build_wb_link(query: str, sort: str = None, rating: str = None) -> str:
     base = "https://www.wildberries.ru/catalog/0/search.aspx"
     
-    # Базовые параметры
+    # Только рабочие параметры
     params = {
         "search": query,
-        "dest": "-1257786"  # Россия
+        "dest": "-1257786"  # Единственный рабочий dest (Россия)
     }
     
-    # Добавляем фильтры
-    params.update(filters)
-    
-    # Кодируем и формируем URL
+    if sort:
+        params["sort"] = sort
+    if rating:
+        params["rating"] = rating
+
+    # Кодируем: пробелы как %20, кириллица корректно
     encoded_params = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"{base}?{encoded_params}"
 
-# === Команда /start — красивое приветствие ===
+# === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -146,14 +148,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton(
-                "💎 2. Премиум-версия",
-                url=build_wb_link(encoded_query, sort="pricedown", foriginal="1")
+                "💎 2. Самые дорогие",
+                url=build_wb_link(encoded_query, sort="pricedown")
             )
         ],
         [
             InlineKeyboardButton(
-                "💰 3. Бюджетный вариант",
-                url=build_wb_link(encoded_query, sort="priceup", foriginal="1")
+                "💰 3. Самые дешёвые",
+                url=build_wb_link(encoded_query, sort="priceup")
             )
         ],
         [
@@ -165,7 +167,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton(
                 "🔥 5. Хит сезона",
-                url=build_wb_link(encoded_query, sort="popular", dest="-1257786")
+                url=build_wb_link(encoded_query, sort="popular")
             )
         ]
     ]
