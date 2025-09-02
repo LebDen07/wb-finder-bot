@@ -1,7 +1,7 @@
 # bot.py
 import os
 import requests
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from flask import Flask
 from threading import Thread
@@ -17,77 +17,79 @@ logger = logging.getLogger(__name__)
 
 # === Токены из переменных окружения ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Для ИИ
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Для ИИ (опционально)
 
 if not TELEGRAM_TOKEN:
-    logger.error("❗ Не задан TELEGRAM_TOKEN")
+    logger.error("❗ TELEGRAM_TOKEN не задан")
 else:
     logger.info("✅ TELEGRAM_TOKEN загружен")
 
-# === Flask для поддержания активности (чтобы Render не "убил" процесс) ===
+# === Flask для поддержания активности ===
 app_flask = Flask('')
 
 @app_flask.route('/')
 def home():
-    return "✅ Бот работает 24/7"
+    return "✅ Бот для Ozon работает 24/7"
 
 def run():
     port = int(os.getenv('PORT', 8080))
     app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
+    logger.info("🚀 Запускаем Flask-сервер...")
     t = Thread(target=run)
     t.daemon = True
     t.start()
 
-# === Категории для кнопок ===
+# === Категории Ozon ===
 CATEGORIES = {
-    "🎧 Наушники": "наушники",
-    "👟 Кроссовки": "кроссовки",
-    "📱 Смартфоны": "смартфон",
-    "⌚ Часы": "часы",
-    "🎒 Рюкзаки": "рюкзак"
+    "🎧 Наушники": "naushniki",
+    "👟 Кроссовки": "krossovki",
+    "📱 Смартфоны": "smartfony",
+    "⌚ Часы": "chasy",
+    "🎒 Рюкзаки": "ryukzaki",
+    "💻 Ноутбуки": "noutbuki"
 }
 
-BUDGETS = ["до 1000₽", "до 3000₽", "до 5000₽", "до 10000₽"]
+BUDGETS = ["до 1000", "до 3000", "до 5000", "до 10000"]
 RATINGS = ["от 4.5", "от 4.7", "от 4.8"]
 
 # === Пример товаров (mock) — можно заменить на API позже ===
 MOCK_PRODUCTS = [
     {
-        "title": "Наушники беспроводные Sony WF-C500",
-        "price": "4 999 ₽",
-        "rating": "4.8",
-        "reviews": "247",
-        "image": "https://cf1.wbstatic.net/big/new/12345678/1.jpg",
-        "url": "https://www.wildberries.ru/catalog/12345678/detail.aspx"
-    },
-    {
-        "title": "Кроссовки мужские Nike Air Zoom Pegasus",
-        "price": "7 499 ₽",
-        "rating": "4.9",
-        "reviews": "189",
-        "image": "https://cf1.wbstatic.net/big/new/87654321/1.jpg",
-        "url": "https://www.wildberries.ru/catalog/87654321/detail.aspx"
-    },
-    {
-        "title": "Смартфон Xiaomi Redmi Note 13 Pro",
-        "price": "12 999 ₽",
+        "title": "Наушники беспроводные Xiaomi",
+        "price": "1 999 ₽",
         "rating": "4.7",
-        "reviews": "312",
-        "image": "https://cf1.wbstatic.net/big/new/24681357/1.jpg",
-        "url": "https://www.wildberries.ru/catalog/24681357/detail.aspx"
+        "reviews": "128",
+        "image": "https://cdn1.ozone.ru/s3/multimedia-1-w/u10171733814.jpg",
+        "url": "https://www.ozon.ru/product/naushniki-xiaomi-123456"
+    },
+    {
+        "title": "Кроссовки мужские Adidas",
+        "price": "5 499 ₽",
+        "rating": "4.8",
+        "reviews": "203",
+        "image": "https://cdn1.ozone.ru/s3/multimedia-1-x/u10171733815.jpg",
+        "url": "https://www.ozon.ru/product/krossovki-adidas-789012"
+    },
+    {
+        "title": "Смартфон Samsung Galaxy S23",
+        "price": "45 999 ₽",
+        "rating": "4.9",
+        "reviews": "341",
+        "image": "https://cdn1.ozone.ru/s3/multimedia-1-y/u10171733816.jpg",
+        "url": "https://www.ozon.ru/product/smartfon-samsung-345678"
     }
 ]
 
-# === Диалоговое состояние пользователя ===
+# === Состояние пользователя ===
 user_state = {}
 
-# === Запрос к ИИ через OpenRouter ===
+# === Запрос к ИИ через OpenRouter (для понимания запроса) ===
 def ai_query(prompt: str) -> dict:
     if not OPENROUTER_API_KEY:
-        return {"query": prompt, "budget": "до 5000₽", "rating": "4.7"}
+        # fallback
+        return {"query": prompt, "budget": "до 5000", "rating": "4.7"}
     
     try:
         response = requests.post(
@@ -99,7 +101,7 @@ def ai_query(prompt: str) -> dict:
             json={
                 "model": "qwen/qwen2.5-7b-instruct",
                 "messages": [
-                    {"role": "system", "content": "Ты — ассистент по поиску товаров на Wildberries. Извлеки: что ищет, бюджет, рейтинг. Верни JSON: {query, budget, rating}"},
+                    {"role": "system", "content": "Ты — ассистент по поиску товаров на Ozon. Извлеки: что ищет, бюджет, рейтинг. Верни JSON: {query, budget, rating}"},
                     {"role": "user", "content": prompt}
                 ]
             },
@@ -107,27 +109,28 @@ def ai_query(prompt: str) -> dict:
         )
         result = response.json()
         content = result["choices"][0]["message"]["content"]
-        # Простой парсинг JSON (в реальности можно использовать json.loads)
-        return eval(content) if "query" in content else {"query": prompt, "budget": "до 5000₽", "rating": "4.7"}
+        # Простой парсинг (в реальности можно использовать json.loads)
+        return eval(content) if "query" in content else {"query": prompt, "budget": "до 5000", "rating": "4.7"}
     except Exception as e:
         logger.error(f"❌ Ошибка ИИ: {e}")
-        return {"query": prompt, "budget": "до 5000₽", "rating": "4.7"}
+        return {"query": prompt, "budget": "до 5000", "rating": "4.7"}
 
-# === Генерация ссылки на Wildberries ===
-def make_wb_link(query: str, rating: str = "4.7") -> str:
+# === Генерация ссылки на Ozon ===
+def make_ozon_link(query: str, rating: str = "4.7", sorting: str = "rating") -> str:
     encoded_query = urllib.parse.quote(query)
     min_rating = rating.replace("от ", "")
-    return f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&sort=popular&rating={min_rating}"
+    # Ozon: ?text=...&rating=...&sorting=...
+    return f"https://www.ozon.ru/search/?text={encoded_query}&rating={min_rating}&sorting={sorting}"
 
-# === Команда /start ===
+# === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_state[user_id] = {"step": "start"}
 
-    keyboard = [[InlineKeyboardButton(cat, callback_data=f"cat_{key}")] for key, cat in CATEGORIES.items()]
+    keyboard = [[InlineKeyboardButton(name, callback_data=f"cat_{key}")] for name, key in CATEGORIES.items()]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🛒 *Добро пожаловать в бот по поиску товаров на Wildberries!*\n\n"
+        "🛒 *Добро пожаловать в бот по поиску товаров на Ozon!*\n\n"
         "Выберите категорию или напишите, что ищете:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
@@ -141,13 +144,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("cat_"):
-        search_query = data.replace("cat_", "")
-        user_state[user_id]["query"] = search_query
+        search_key = data.replace("cat_", "")
+        user_state[user_id]["query"] = search_key
         user_state[user_id]["step"] = "budget"
 
         keyboard = [[InlineKeyboardButton(budg, callback_data=f"budg_{budg}")] for budg in BUDGETS]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Вы ищете: *{search_query}*\n\nУкажите бюджет:", reply_markup=reply_markup, parse_mode="Markdown")
+        await query.edit_message_text(f"Вы ищете: *{search_key}*\n\nУкажите бюджет:", reply_markup=reply_markup, parse_mode="Markdown")
 
     elif data.startswith("budg_"):
         budget = data.replace("budg_", "")
@@ -163,13 +166,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rating = data.replace("rat_", "")
         user_state[user_id]["rating"] = rating
         final_query = user_state[user_id]["query"]
-        full_query = f"{final_query} {user_state[user_id]['budget']}".strip()
+        budget = user_state[user_id]["budget"]
 
         # Генерируем ссылку
-        wb_link = make_wb_link(full_query, rating)
+        ozon_link = make_ozon_link(final_query, rating)
 
         # Показываем "Ищу..."
-        await query.edit_message_text("🔍 *Ищу лучшие варианты...*", parse_mode="Markdown")
+        await query.edit_message_text("🔍 *Ищу лучшие варианты на Ozon...*", parse_mode="Markdown")
 
         # Показываем mock-товары
         for product in MOCK_PRODUCTS:
@@ -196,8 +199,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         disable_web_page_preview=True
                     )
 
-        # Кнопка "Посмотреть все"
-        keyboard = [[InlineKeyboardButton("🌐 Посмотреть все на Wildberries", url=wb_link)]]
+        # Кнопка "Посмотреть все на Ozon"
+        keyboard = [[InlineKeyboardButton("🌐 Посмотреть все на Ozon", url=ozon_link)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.send_message(
             chat_id=query.message.chat_id,
@@ -217,15 +220,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отправляем в ИИ
     ai_result = ai_query(text)
     query = ai_result.get("query", text)
-    budget = ai_result.get("budget", "до 5000₽")
+    budget = ai_result.get("budget", "до 5000")
     rating = ai_result.get("rating", "4.7")
 
-    full_query = f"{query} {budget}"
-    wb_link = make_wb_link(query, rating)
+    # Генерируем ссылку
+    ozon_link = make_ozon_link(query, rating)
 
     await update.message.reply_text(
-        f"🔍 *Ищу:* `{full_query}`\n"
-        f"⭐ *Минимальный рейтинг:* `{rating}`",
+        f"🔍 *Ищу на Ozon:* `{query}`\n"
+        f"💰 Бюджет: `{budget}`\n"
+        f"⭐ Рейтинг: `{rating}`",
         parse_mode="Markdown"
     )
 
@@ -255,11 +259,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
     # Кнопка
-    keyboard = [[InlineKeyboardButton("🌐 Посмотреть все на Wildberries", url=wb_link)]]
+    keyboard = [[InlineKeyboardButton("🌐 Посмотреть все на Ozon", url=ozon_link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(
         chat_id=update.message.chat_id,
-        text="✅ Вот лучшие предложения!",
+        text="✅ Вот лучшие предложения на Ozon!",
         reply_markup=reply_markup
     )
 
@@ -270,7 +274,7 @@ if __name__ == "__main__":
     if not TELEGRAM_TOKEN:
         logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
     else:
-        logger.info("🤖 Бот запускается...")
+        logger.info("🤖 Бот для Ozon запускается...")
         app = Application.builder().token(TELEGRAM_TOKEN).build()
 
         app.add_handler(CommandHandler("start", start))
