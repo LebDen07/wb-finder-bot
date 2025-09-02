@@ -25,19 +25,19 @@ if not TELEGRAM_TOKEN:
 else:
     logger.info("✅ TELEGRAM_TOKEN загружен")
 
-# === Flask для поддержания активности ===
+# === Flask для поддержания активности (чтобы Render не "убил" процесс) ===
 app_flask = Flask('')
 
 @app_flask.route('/')
 def home():
-    return "✅ Бот работает 24/7"
+    return "✨ Бот для Wildberries работает 24/7"
 
 def run():
     port = int(os.getenv('PORT', 8080))
     app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    logger.info("🚀 Запускаем Flask-сервер...")
+    logger.info("🚀 Запускаем Flask-сервер для поддержания активности...")
     t = Thread(target=run)
     t.daemon = True
     t.start()
@@ -49,20 +49,58 @@ def build_link(query: str, params: dict) -> str:
     encoded = urllib.parse.urlencode(all_params)
     return f"{base}?{encoded}"
 
-# === Команда /start ===
+# === Команда /start — кинематографическое приветствие ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    # Эффект "печатает..."
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await asyncio.sleep(1.2)
+
+    # Приветствие 1
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="💫 Добро пожаловать в...",
+        parse_mode="Markdown"
+    )
+
+    await asyncio.sleep(1.0)
+
+    # Приветствие 2
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🛒 *Лучшее с Wildberries | DenShop1*",
+        parse_mode="Markdown"
+    )
+
+    await asyncio.sleep(1.0)
+
+    # Приветствие 3
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🔍 Ваш личный помощник в поиске самых выгодных предложений на Wildberries.",
+        parse_mode="Markdown"
+    )
+
+    await asyncio.sleep(1.2)
+
+    # Кнопка
     keyboard = [
-        [InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")]
+        [InlineKeyboardButton("✨ Начать поиск", callback_data="start_searching")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        "🎉 *Привет! Добро пожаловать в бот по поиску самых выгодных цен на Wildberries!* 🛍️\n\n"
-        "🔥 Здесь ты найдёшь:\n"
-        "✅ *Топовые товары* с самыми высокими оценками ⭐\n"
-        "💰 *Максимальные скидки* и лучшие цены 💸\n\n"
-        "📌 Подпишись на канал: [*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
-        "🚀 Просто нажми кнопку ниже и начни экономить уже сейчас!",
+    # Финальное сообщение + канал
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "🔥 Здесь вы найдёте:\n"
+            "✅ *Топовые товары* с высоким рейтингом ⭐\n"
+            "💰 *Максимальные скидки* и лучшие цены 💸\n\n"
+            "📌 Подпишитесь на канал:\n"
+            "[*Лучшее с Wildberries | DenShop1*](https://t.me/+uGrNl01GXGI4NjI6)\n"
+            "Там — только горячие скидки и лайфхаки! 🔥"
+        ),
         parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=reply_markup
@@ -72,10 +110,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     if query.data == "start_searching":
         await query.edit_message_text(
             "Отлично! 🔥\n"
-            "Теперь напиши, что ты хочешь найти на Wildberries.\n\n"
+            "Теперь напишите, что вы хотите найти на Wildberries.\n\n"
             "Например:\n"
             "• Наушники Sony\n"
             "• Кроссовки\n"
@@ -90,9 +129,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Запрос слишком короткий.")
         return
 
+    chat_id = update.effective_chat.id
+
     # Эффект "печатает..."
-    await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     await asyncio.sleep(1.5)
+
+    # Показываем, что ищем
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🔍 *Ищу лучшие варианты для:* `{query}`",
+        parse_mode="Markdown"
+    )
+
+    # Ещё эффект
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await asyncio.sleep(1.8)
 
     # Кодируем запрос
     encoded_query = urllib.parse.quote(query)
@@ -107,14 +159,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем сообщение с меню
+    # Отправляем меню
     message = (
-        f"🔍 *Вы ищете:* `{query}`\n\n"
-        "Выберите категорию поиска:"
+        f"🎯 *Вот как можно искать «{query}»:*\n\n"
+        "Выберите подходящий вариант:"
     )
 
-    await update.message.reply_text(
-        message,
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=message,
         parse_mode="Markdown",
         reply_markup=reply_markup
     )
