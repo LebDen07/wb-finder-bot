@@ -3,7 +3,6 @@ import os
 import asyncio
 import csv
 import logging
-import urllib.parse
 import time
 from datetime import datetime
 from threading import Thread
@@ -62,13 +61,6 @@ def log_search(user_id, username, query):
     with open("search_log.csv", "a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.now(), user_id, username, query])
-
-# === Генерация ссылок на Wildberries ===
-def build_wb_link(query: str, params: dict) -> str:
-    base = "https://www.wildberries.ru/catalog/0/search.aspx"
-    all_params = {**params, "search": query}
-    encoded = urllib.parse.urlencode(all_params)
-    return f"{base}?{encoded}"
 
 # === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,16 +126,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Логируем запрос
     log_search(user_id, username, query)
 
-    # Кодируем запрос
-    encoded_query = urllib.parse.quote(query)
+    # Кодируем запрос (для URL)
+    encoded_query = query.replace(" ", "+")
 
-    # Кнопки с фильтрами
+    # Кнопки с ссылками, как в твоей версии
     keyboard = [
-        [InlineKeyboardButton("1. Лидер продаж", url=build_wb_link(encoded_query, {"page": "1", "sort": "popular"}))],
-        [InlineKeyboardButton("2. Премиум версия", url=build_wb_link(encoded_query, {"page": "1", "sort": "rate", "priceU": "10000;1000000"}))],
-        [InlineKeyboardButton("3. Бюджетный вариант", url=build_wb_link(encoded_query, {"page": "1", "priceU": "0;3000"}))],
-        [InlineKeyboardButton("4. Высокий рейтинг", url=build_wb_link(encoded_query, {"page": "1", "rating": "4.9"}))],
-        [InlineKeyboardButton("5. Хит сезона", url=build_wb_link(encoded_query, {"page": "1", "sort": "popular", "dest": "-1257786"}))]
+        [InlineKeyboardButton("🏆 1. Лидер продаж", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&sort=popular")],
+        [InlineKeyboardButton("💎 2. Самые дорогие", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&sort=pricedown")],
+        [InlineKeyboardButton("💰 3. Самые дешёвые", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&sort=priceup")],
+        [InlineKeyboardButton("⭐ 4. Высокий рейтинг", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&rating=4.9")],
+        [InlineKeyboardButton("🔥 5. Хит сезона", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&sort=popular")],
+        [InlineKeyboardButton("🔄 Вернуться к поиску другого товара", callback_data="start_searching")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -212,8 +205,8 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❤️ Спасибо за поддержку!\n"
         "Если хотите помочь развитию бота:\n"
-        "Сбер: `2202 2002 1234 5678`\n"
-        "или [кофе на QR-код](https://example.com/donate-qr.png)",
+        "Сбер: `тут будет мой сбер`\n"
+        "или [кофе на QR-код](тут будет мой код)",
         disable_web_page_preview=True
     )
 
