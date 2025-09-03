@@ -10,7 +10,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from flask import Flask
 
 # Настройка логирования
-import logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # 🔥 ЗАМЕНИ НА СВОЙ ID (можно узнать у @userinfobot)
-ADMIN_ID = 954944438
+ADMIN_ID = 954944438  # ← Пример: 583834123
 
 if not TELEGRAM_TOKEN:
     logger.error("❗ TELEGRAM_TOKEN не задан")
@@ -61,7 +60,7 @@ def log_search(user_id, username, query):
         writer = csv.writer(f)
         writer.writerow([datetime.now(), user_id, username, query])
 
-# === Генерация ссылок без aff_id ===
+# === Генерация ссылок ===
 def build_wb_link(query: str, params: dict) -> str:
     base = "https://www.wildberries.ru/catalog/0/search.aspx"
     all_params = {**params, "search": query}
@@ -74,7 +73,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or "unknown"
     user_ids.add(user_id)
 
-    # Кнопки
     keyboard = [
         [InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")],
         [InlineKeyboardButton("📌 Подписаться на канал", url="https://t.me/+uGrNl01GXGI4NjI6")]
@@ -236,4 +234,3 @@ if __name__ == "__main__":
 
         logger.info("✅ Бот запущен и слушает сообщения...")
         app.run_polling(drop_pending_updates=True)
-
