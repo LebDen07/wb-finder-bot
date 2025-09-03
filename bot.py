@@ -3,6 +3,8 @@ import os
 import asyncio
 import csv
 import threading
+import logging  # ✅ Обязательно импортируем logging
+import urllib.parse  # ✅ Для build_wb_link
 from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatAction
@@ -19,15 +21,15 @@ logger = logging.getLogger(__name__)
 # === Токен бота ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# 🔥 ЗАМЕНИ НА СВОЙ ID (можно узнать у @userinfobot)
-ADMIN_ID = 954944438  # ← Пример: 583834123
+# 🔥 ЗАМЕНИ НА СВОЙ ID (узнай у @userinfobot)
+ADMIN_ID = 954944438
 
 if not TELEGRAM_TOKEN:
     logger.error("❗ TELEGRAM_TOKEN не задан")
 else:
     logger.info("✅ TELEGRAM_TOKEN загружен")
 
-# === Flask для поддержания активности ===
+# === Flask для поддержания активности (чтобы Render не "убил" процесс) ===
 app_flask = Flask('')
 
 @app_flask.route('/')
@@ -60,7 +62,7 @@ def log_search(user_id, username, query):
         writer = csv.writer(f)
         writer.writerow([datetime.now(), user_id, username, query])
 
-# === Генерация ссылок ===
+# === Генерация ссылок без aff_id ===
 def build_wb_link(query: str, params: dict) -> str:
     base = "https://www.wildberries.ru/catalog/0/search.aspx"
     all_params = {**params, "search": query}
@@ -73,6 +75,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or "unknown"
     user_ids.add(user_id)
 
+    # Кнопки
     keyboard = [
         [InlineKeyboardButton("🔍 Начать поиск", callback_data="start_searching")],
         [InlineKeyboardButton("📌 Подписаться на канал", url="https://t.me/+uGrNl01GXGI4NjI6")]
@@ -234,3 +237,4 @@ if __name__ == "__main__":
 
         logger.info("✅ Бот запущен и слушает сообщения...")
         app.run_polling(drop_pending_updates=True)
+
