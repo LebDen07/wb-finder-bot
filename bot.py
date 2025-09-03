@@ -2,10 +2,11 @@
 import os
 import asyncio
 import csv
-import threading
-import logging  # ✅ Обязательно импортируем logging
-import urllib.parse  # ✅ Для build_wb_link
+import logging
+import urllib.parse
+import time
 from datetime import datetime
+from threading import Thread
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 # === Токен бота ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# 🔥 ЗАМЕНИ НА СВОЙ ID (узнай у @userinfobot)
-ADMIN_ID = 954944438
+# 🔥 ЗАМЕНИ НА СВОЙ ID (узнать можно у @userinfobot)
+ADMIN_ID = 954944438  # ← Например: 583834123
 
 if not TELEGRAM_TOKEN:
     logger.error("❗ TELEGRAM_TOKEN не задан")
@@ -62,7 +63,7 @@ def log_search(user_id, username, query):
         writer = csv.writer(f)
         writer.writerow([datetime.now(), user_id, username, query])
 
-# === Генерация ссылок без aff_id ===
+# === Генерация ссылок на Wildberries ===
 def build_wb_link(query: str, params: dict) -> str:
     base = "https://www.wildberries.ru/catalog/0/search.aspx"
     all_params = {**params, "search": query}
@@ -237,4 +238,3 @@ if __name__ == "__main__":
 
         logger.info("✅ Бот запущен и слушает сообщения...")
         app.run_polling(drop_pending_updates=True)
-
