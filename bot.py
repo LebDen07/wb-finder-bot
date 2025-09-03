@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # 🔥 ЗАМЕНИ НА СВОЙ ID (можно узнать у @userinfobot)
-ADMIN_ID = @no_name583834
+ADMIN_ID = 954944438
 
 if not TELEGRAM_TOKEN:
     logger.error("❗ TELEGRAM_TOKEN не задан")
@@ -236,3 +236,4 @@ if __name__ == "__main__":
 
         logger.info("✅ Бот запущен и слушает сообщения...")
         app.run_polling(drop_pending_updates=True)
+
