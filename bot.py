@@ -9,7 +9,6 @@ from threading import Thread
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from flask import Flask
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,29 +21,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # 🔥 ЗАМЕНИ НА СВОЙ ID (узнать можно у @userinfobot)
-ADMIN_ID = 954944438  # ← Например: 583834123
+ADMIN_ID = 123456789  # ← Например: 583834123
 
 if not TELEGRAM_TOKEN:
     logger.error("❗ TELEGRAM_TOKEN не задан")
 else:
     logger.info("✅ TELEGRAM_TOKEN загружен")
-
-# === Flask для поддержания активности (чтобы Render не "убил" процесс) ===
-app_flask = Flask('')
-
-@app_flask.route('/')
-def home():
-    return "✅ Бот работает 24/7"
-
-def run():
-    port = int(os.getenv('PORT', 8080))
-    app_flask.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    logger.info("🚀 Запускаем Flask-сервер...")
-    t = Thread(target=run)
-    t.daemon = True
-    t.start()
 
 # === Состояние и логирование ===
 user_ids = set()  # Для рассылки
@@ -126,10 +108,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Логируем запрос
     log_search(user_id, username, query)
 
-    # Кодируем запрос (для URL)
+    # Кодируем запрос
     encoded_query = query.replace(" ", "+")
 
-    # Кнопки с ссылками, как в твоей версии
+    # Кнопки с ссылками, как ты хотел
     keyboard = [
         [InlineKeyboardButton("🏆 1. Лидер продаж", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&sort=popular")],
         [InlineKeyboardButton("💎 2. Самые дорогие", url=f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded_query}&dest=-1257786&sort=pricedown")],
@@ -205,15 +187,13 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❤️ Спасибо за поддержку!\n"
         "Если хотите помочь развитию бота:\n"
-        "Сбер: `тут будет мой сбер`\n"
-        "или [кофе на QR-код](тут будет мой код)",
+        "Сбер: `2202 2002 1234 5678`\n"
+        "или [кофе на QR-код](https://example.com/donate-qr.png)",
         disable_web_page_preview=True
     )
 
 # === Запуск бота ===
 if __name__ == "__main__":
-    keep_alive()  # Запускаем Flask
-
     if not TELEGRAM_TOKEN:
         logger.error("❗ Бот не может запуститься: не задан TELEGRAM_TOKEN")
     else:
